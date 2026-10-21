@@ -210,12 +210,19 @@ class WhatsAppSessionManager extends EventEmitter {
           const fromMe = msg.key.fromMe || false;
           const remoteJid = msg.key.remoteJid;
 
-          // Ignore status broadcasts
-          if (remoteJid === 'status@broadcast') continue;
+          // Ignore status broadcasts, reactions, or protocol frames
+          if (!remoteJid || remoteJid === 'status@broadcast') continue;
+          if (msg.message?.protocolMessage || msg.message?.reactionMessage) continue;
 
           const text = msg.message?.conversation ||
                        msg.message?.extendedTextMessage?.text ||
                        msg.message?.imageMessage?.caption || '';
+
+          // Completely ignore messages with no text content
+          if (!text || !text.trim()) continue;
+
+          // Ignore WhatsApp internal self-device sync messages (fromMe on @lid)
+          if (fromMe && remoteJid.endsWith('@lid')) continue;
 
           // Cleanly extract customer phone and user JID without device suffix (:0, :1)
           const rawJid = remoteJid || '';

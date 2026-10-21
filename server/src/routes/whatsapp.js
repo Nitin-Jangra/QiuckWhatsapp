@@ -127,9 +127,25 @@ router.get('/messages', (req, res) => {
   const tenantId = req.query.tenantId || 'tenant-demo';
   const branchId = req.query.branchId || 'branch-main';
   const filtered = messageStore.filter(
-    (m) => m.tenantId === tenantId && m.branchId === branchId
+    (m) => m.tenantId === tenantId && m.branchId === branchId && m.text && m.text.trim() && !(m.fromMe && m.remoteJid && m.remoteJid.endsWith('@lid'))
   );
   res.json({ success: true, data: filtered });
+});
+
+// Clear Messages (Inbox)
+router.delete('/messages', (req, res) => {
+  const tenantId = req.query.tenantId || 'tenant-demo';
+  const branchId = req.query.branchId || 'branch-main';
+  const phone = req.query.phone;
+  for (let i = messageStore.length - 1; i >= 0; i--) {
+    const m = messageStore[i];
+    if (m.tenantId === tenantId && m.branchId === branchId) {
+      if (!phone || m.customerPhone === phone || m.remoteJid === phone) {
+        messageStore.splice(i, 1);
+      }
+    }
+  }
+  res.json({ success: true, message: 'Message history cleared' });
 });
 
 // 7. Real-Time Server-Sent Events (SSE) Stream

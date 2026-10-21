@@ -228,6 +228,9 @@ export default function Dashboard() {
           for (const msg of sorted) {
             const digits = cleanPhoneDigits(msg.customerPhone || msg.remoteJid);
             if (!digits) continue;
+            // Filter out empty messages and internal WhatsApp self-device syncs
+            if (!msg.text || !msg.text.trim()) continue;
+            if (digits === '141382521979108' || (msg.remoteJid && msg.remoteJid.endsWith('@lid') && msg.fromMe)) continue;
             const cPhone = `+${digits}`;
             const dPhone = formatDisplayPhone(digits);
             if (!map.has(digits)) {
@@ -321,11 +324,13 @@ export default function Dashboard() {
       try {
         const msg = JSON.parse(e.data);
         const incomingDigits = cleanPhoneDigits(msg.customerPhone || msg.remoteJid);
-        if (!incomingDigits) return;
+        const incomingText = msg.text || '';
+        // Completely ignore empty messages and internal self-device frames
+        if (!incomingText.trim()) return;
+        if (incomingDigits === '141382521979108' || (msg.remoteJid && msg.remoteJid.endsWith('@lid') && msg.fromMe)) return;
 
         const canonicalPhone = `+${incomingDigits}`;
         const displayPhone = formatDisplayPhone(incomingDigits);
-        const incomingText = msg.text || '';
 
         // Auto-assign chat to branch agent (e.g., Diya Patel)
         const branchAgent = usersList.find(u => u.branch_id === activeBranchId && u.role_id === 'AGENT')
@@ -469,6 +474,31 @@ export default function Dashboard() {
     }));
     setTransferNotice(`Chat successfully transferred to ${targetBranch.name}`);
     setTimeout(() => setTransferNotice(''), 4000);
+  };
+
+  // Delete / Remove a conversation
+  const handleDeleteConversation = async (convId, e) => {
+    e?.stopPropagation();
+    const conv = conversations.find(c => c.id === convId);
+    if (!conv) return;
+
+    if (!window.confirm(`Are you sure you want to remove the conversation with ${conv.customerName}?`)) {
+      return;
+    }
+
+    setConversations(prev => prev.filter(c => c.id !== convId));
+    if (selectedConvId === convId) {
+      setSelectedConvId(null);
+    }
+
+    try {
+      await fetch(`/api/whatsapp/messages?tenantId=${activeTenantId}&branchId=${activeBranchId}&phone=${encodeURIComponent(conv.customerPhone)}`, {
+        method: 'DELETE'
+      });
+    } catch (err) {}
+
+    setTransferNotice(`Removed conversation with ${conv.customerName}`);
+    setTimeout(() => setTransferNotice(''), 3000);
   };
 
   // Send WhatsApp message back to customer
@@ -1049,12 +1079,21 @@ export default function Dashboard() {
                         }}
                       >
                         <div className="d-flex justify-content-between align-items-start mb-1">
-                          <span className="fw-semibold text-truncate text-body" style={{ maxWidth: '190px' }}>
+                          <span className="fw-semibold text-truncate text-body" style={{ maxWidth: '170px' }}>
                             {c.customerName}
                           </span>
-                          <span className="text-muted small" style={{ fontSize: '0.72rem' }}>
-                            {c.lastMessageTime}
-                          </span>
+                          <div className="d-flex align-items-center gap-1">
+                            <span className="text-muted small" style={{ fontSize: '0.72rem' }}>
+                              {c.lastMessageTime}
+                            </span>
+                            <button
+                              className="btn btn-xs btn-link text-muted p-0 ms-1 opacity-50 hover-opacity-100"
+                              title="Delete conversation"
+                              onClick={(e) => handleDeleteConversation(c.id, e)}
+                            >
+                              <i className="bi bi-x-circle text-danger" style={{ fontSize: '0.85rem' }}></i>
+                            </button>
+                          </div>
                         </div>
                         <div className="d-flex align-items-center gap-1 mb-1">
                           <span className="badge bg-body-tertiary border text-body" style={{ fontSize: '0.68rem' }}>
@@ -1221,6 +1260,16 @@ export default function Dashboard() {
                           <span className="small">Refresh WA</span>
                         </button>
                       )}
+
+                      <button
+                        className="btn btn-sm btn-outline-danger d-inline-flex align-items-center gap-1 py-1 px-2"
+                        style={{ fontSize: '0.78rem' }}
+                        onClick={(e) => handleDeleteConversation(selectedConv.id, e)}
+                        title="Delete this conversation"
+                      >
+                        <i className="bi bi-trash text-danger"></i>
+                        <span className="small d-none d-sm-inline">Delete Chat</span>
+                      </button>
                     </div>
                   </div>
 
@@ -1353,100 +1402,6 @@ export default function Dashboard() {
               )}
             </div>
 
-            {/* Column 3: Contact Context / Lead Details Pane */}
-            {selectedConv && (
-              <div
-                className="d-none d-xl-flex flex-column p-3 border-start overflow-y-auto"
-                style={{
-                  width: '320px',
-                  backgroundColor: 'var(--bg-card)',
-                  borderColor: 'var(--border-subtle)'
-                }}
-              >
-                <div className="small fw-bold text-uppercase text-muted mb-3" style={{ fontSize: '0.74rem', letterSpacing: '0.5px' }}>
-                  <i className="bi bi-person-lines-fill me-1 text-warning"></i> Client Profile
-                </div>
-
-                <div className="text-center mb-3 pb-3 border-bottom" style={{ borderColor: 'var(--border-subtle)' }}>
-                  <div
-                    className="rounded-circle text-white d-flex align-items-center justify-content-center fw-bold mx-auto mb-2"
-                    style={{
-                      width: '52px',
-                      height: '52px',
-                      fontSize: '1.2rem',
-                      background: 'linear-gradient(135deg, var(--brand-orange), var(--brand-orange-hover))'
-                    }}
-                  >
-                    {selectedConv.customerName.charAt(0)}
-                  </div>
-                  <h6 className="fw-bold mb-0 text-body">{selectedConv.customerName}</h6>
-                  <span className="text-muted small">{formatDisplayPhone(selectedConv.customerPhone)}</span>
-                </div>
-
-                <div className="mb-3">
-                  <label className="small text-muted fw-semibold d-block mb-1">Branch Queue</label>
-                  <div className="d-flex align-items-center justify-content-between p-2 rounded bg-body-tertiary border mb-2">
-                    <div>
-                      <div className="fw-semibold text-body small">{selectedConv.branchName || 'Greater Noida Hub'}</div>
-                      <div className="text-muted" style={{ fontSize: '0.7rem' }}>Assigned Service Branch</div>
-                    </div>
-                    <span className="badge bg-secondary-subtle text-secondary small">Active</span>
-                  </div>
-                </div>
-
-                <div className="mb-3">
-                  <label className="small text-muted fw-semibold d-block mb-1">Assigned Support Agent</label>
-                  <div className="d-flex align-items-center justify-content-between p-2 rounded bg-body-tertiary border">
-                    <div>
-                      <div className="fw-semibold text-body small">{selectedConv.assignedTo}</div>
-                      <div className="text-muted" style={{ fontSize: '0.7rem' }}>Primary Inbound Handler</div>
-                    </div>
-                    <span className="badge bg-primary-subtle text-primary small">Assigned</span>
-                  </div>
-                </div>
-
-                <div className="mb-3">
-                  <label className="small text-muted fw-semibold d-block mb-1">Pipeline Stage</label>
-                  <span className="badge bg-primary-subtle text-primary py-1 px-2">
-                    {selectedConv.leadInfo.stage}
-                  </span>
-                </div>
-
-                <div className="mb-3">
-                  <label className="small text-muted fw-semibold d-block mb-1">Estimated Budget</label>
-                  <span className="fw-semibold text-body small">{selectedConv.leadInfo.budget}</span>
-                </div>
-
-                <div className="mb-3">
-                  <label className="small text-muted fw-semibold d-block mb-1">Tags</label>
-                  <div className="d-flex flex-wrap gap-1">
-                    {selectedConv.leadInfo.tags.map(t => (
-                      <span key={t} className="badge bg-body-tertiary text-body border" style={{ fontSize: '0.7rem' }}>
-                        {t}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-
-                <div className="mb-3">
-                  <label className="small text-muted fw-semibold d-block mb-1">Internal Notes</label>
-                  <textarea
-                    className="form-control message-input small"
-                    rows="3"
-                    defaultValue={selectedConv.leadInfo.internalNote}
-                    placeholder="Add team notes..."
-                  ></textarea>
-                </div>
-
-                <button
-                  type="button"
-                  className="btn btn-sm btn-msquare-primary w-100 mt-auto"
-                  onClick={() => alert(`Saved notes for ${selectedConv.customerName}`)}
-                >
-                  <i className="bi bi-save me-1"></i> Save CRM Note
-                </button>
-              </div>
-            )}
           </div>
         ) : activeView === 'channels' ? (
           /* WhatsApp Channels View */
