@@ -423,6 +423,10 @@ body {
   color: var(--text-primary) !important;
 }
 
+.table {
+  color: var(--text-primary) !important;
+}
+
 .modal-content {
   background-color: var(--bg-card) !important;
   border: 1px solid var(--border-strong) !important;
@@ -434,18 +438,50 @@ body {
   border-color: var(--border-subtle) !important;
 }
 
-@media (max-width: 768px) {
+/* Mobile & Tablet Responsiveness */
+@media (max-width: 992px) {
   .app-sidebar {
-    display: none;
+    position: fixed;
+    top: 62px;
+    bottom: 0;
+    left: -270px;
+    width: 260px;
+    z-index: 1050;
+    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.25);
+    transition: left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   }
+  .app-sidebar.sidebar-mobile-open {
+    left: 0;
+  }
+  .sidebar-backdrop {
+    position: fixed;
+    top: 62px;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: rgba(0, 0, 0, 0.4);
+    z-index: 1045;
+    backdrop-filter: blur(2px);
+  }
+}
+
+@media (max-width: 768px) {
   .conversation-list-pane {
     width: 100%;
     min-width: 100%;
+    height: 100%;
   }
   .chat-detail-pane {
     width: 100%;
+    min-width: 100%;
+    height: 100%;
   }
-  .mobile-hidden {
+
+  /* Responsive pane toggling on mobile */
+  .mobile-show-chat .conversation-list-pane {
+    display: none !important;
+  }
+  .mobile-hide-chat .chat-detail-pane {
     display: none !important;
   }
 }

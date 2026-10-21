@@ -3,8 +3,8 @@ import { useAuth } from '../context/AuthContext';
 
 export default function Login() {
   const { login } = useAuth();
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
+  const [email, setEmail] = useState('aarav@msquare.com');
+  const [password, setPassword] = useState('admin123');
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
 
@@ -38,14 +38,14 @@ export default function Login() {
   return (
     <div className="min-vh-100 d-flex align-items-center justify-content-center py-5 px-3" style={{ backgroundColor: 'var(--bg-primary)' }}>
       <div
-        className="card shadow-lg border-0"
+        className="card shadow-sm border-0"
         style={{
           maxWidth: '460px',
           width: '100%',
           borderRadius: '16px',
           backgroundColor: 'var(--bg-card)',
-          border: '1px solid var(--border-strong)',
-          boxShadow: 'var(--card-shadow-hover)'
+          border: '1px solid var(--border-subtle)',
+          boxShadow: 'var(--card-shadow)'
         }}
       >
         <div className="card-body p-4 p-sm-5">
@@ -65,7 +65,7 @@ export default function Login() {
               <span>WhatsApp Helpdesk CRM</span>
             </span>
             <p className="text-muted small mt-2 mb-0">
-              Multi-Tenant WhatsApp Helpdesk, Branch Isolation & Automation
+              Branch-Scoped WhatsApp CRM & Employee Workflows
             </p>
           </div>
 
@@ -87,7 +87,7 @@ export default function Login() {
                 <input
                   type="email"
                   className="form-control message-input"
-                  placeholder="name@msquare.com"
+                  placeholder="aarav@msquare.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   required
@@ -95,7 +95,7 @@ export default function Login() {
               </div>
             </div>
 
-            <div className="mb-4">
+            <div className="mb-3">
               <label className="form-label small fw-semibold text-secondary">Password</label>
               <div className="input-group">
                 <span className="input-group-text border-0" style={{ backgroundColor: 'var(--bg-input)', color: 'var(--text-muted)' }}>
@@ -113,7 +113,7 @@ export default function Login() {
 
             <button
               type="submit"
-              className="btn btn-msquare-primary w-100 py-2.5 fw-semibold"
+              className="btn btn-msquare-primary w-100 py-2.5 fw-semibold mb-3"
               disabled={isSubmitting}
             >
               {isSubmitting ? (
@@ -130,62 +130,43 @@ export default function Login() {
             </button>
           </form>
 
-          {/* M Square Team Personas */}
-          <div className="mt-4 pt-3 border-top" style={{ borderColor: 'var(--border-subtle)' }}>
-            <div className="small fw-bold text-uppercase mb-2" style={{ fontSize: '0.74rem', letterSpacing: '0.5px', color: 'var(--brand-orange)' }}>
-              <i className="bi bi-stars me-1"></i> Switch M Square Identity
+          {/* Branch Lead Quick Login Focus */}
+          <div className="mt-3 pt-3 border-top" style={{ borderColor: 'var(--border-subtle)' }}>
+            <div className="d-flex align-items-center justify-content-between mb-2">
+              <span className="small fw-bold text-uppercase" style={{ fontSize: '0.74rem', color: 'var(--brand-orange)' }}>
+                <i className="bi bi-shield-check me-1"></i> Branch Lead Account
+              </span>
+              <span className="badge bg-warning-subtle text-warning small">WhatsApp QR Access</span>
             </div>
-            <div className="d-flex flex-column gap-2">
-              <button
-                type="button"
-                className="btn btn-sm btn-msquare-outline text-start d-flex justify-content-between align-items-center"
-                onClick={() => handleQuickLogin('aarav@msquare.com')}
-                disabled={isSubmitting}
-              >
-                <div>
-                  <div className="fw-semibold small">Aarav Sharma (Branch Lead)</div>
-                  <div className="text-muted" style={{ fontSize: '0.72rem' }}>Greater Noida Hub • Branch Admin</div>
-                </div>
-                <span className="badge bg-warning-subtle text-warning">Branch Lead</span>
-              </button>
 
+            <button
+              type="button"
+              className="btn btn-sm btn-outline-warning w-100 text-start d-flex justify-content-between align-items-center py-2 mb-3"
+              onClick={() => handleQuickLogin('aarav@msquare.com')}
+              disabled={isSubmitting}
+            >
+              <div>
+                <div className="fw-bold small text-body">Aarav Sharma (Branch Lead)</div>
+                <div className="text-muted" style={{ fontSize: '0.72rem' }}>Greater Noida Hub • Can Pair WhatsApp & QR</div>
+              </div>
+              <i className="bi bi-arrow-right-circle fs-5 text-warning"></i>
+            </button>
+
+            <div className="small fw-bold text-uppercase text-muted mb-2" style={{ fontSize: '0.72rem' }}>
+              Alternative Team Members:
+            </div>
+            <div className="d-flex flex-column gap-1.5">
               <button
                 type="button"
-                className="btn btn-sm btn-msquare-outline text-start d-flex justify-content-between align-items-center"
+                className="btn btn-sm btn-msquare-outline text-start d-flex justify-content-between align-items-center py-1.5"
                 onClick={() => handleQuickLogin('diya@msquare.com')}
                 disabled={isSubmitting}
               >
                 <div>
                   <div className="fw-semibold small">Diya Patel (Helpdesk Specialist)</div>
-                  <div className="text-muted" style={{ fontSize: '0.72rem' }}>Greater Noida Support • Agent</div>
+                  <div className="text-muted" style={{ fontSize: '0.7rem' }}>Support Agent • Cannot refresh QR</div>
                 </div>
-                <span className="badge bg-success-subtle text-success">Agent</span>
-              </button>
-
-              <button
-                type="button"
-                className="btn btn-sm btn-msquare-outline text-start d-flex justify-content-between align-items-center"
-                onClick={() => handleQuickLogin('vikram@msquare.com')}
-                disabled={isSubmitting}
-              >
-                <div>
-                  <div className="fw-semibold small">Vikram Mehta (VP Operations)</div>
-                  <div className="text-muted" style={{ fontSize: '0.72rem' }}>Corporate HQ • Tenant Admin</div>
-                </div>
-                <span className="badge bg-primary-subtle text-primary">VP Ops</span>
-              </button>
-
-              <button
-                type="button"
-                className="btn btn-sm btn-msquare-outline text-start d-flex justify-content-between align-items-center"
-                onClick={() => handleQuickLogin('superadmin@msquare.com')}
-                disabled={isSubmitting}
-              >
-                <div>
-                  <div className="fw-semibold small">System Super Admin</div>
-                  <div className="text-muted" style={{ fontSize: '0.72rem' }}>M Square Global • Super Admin</div>
-                </div>
-                <span className="badge bg-danger-subtle text-danger">Super Admin</span>
+                <span className="badge bg-secondary-subtle text-muted">Agent</span>
               </button>
             </div>
           </div>

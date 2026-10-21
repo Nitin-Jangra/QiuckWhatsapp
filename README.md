@@ -143,6 +143,25 @@ You can log in directly at **[http://localhost:3000](http://localhost:3000)** ei
 - **Rollback Procedure**:
   - To revert to Phase 1 baseline: `git reset --hard 6ffe157 && git clean -fd`
 
+### Run 4 — Real CRM Testing, Branch Lead Permissions, In-App QR, & White Theme (2026-10-21)
+- **Objective**: Fix logout visibility & Bootstrap JS bundle, enable real phone number chat initiation, restrict WhatsApp QR pairing to Branch Lead only, integrate live in-app QR scanner modal, enable live SSE message streaming, make white/light theme default, and ensure full mobile responsiveness.
+- **Status**: Completed & Verified (12/12 tests passing, Vite frontend bundle built).
+- **Modifications**:
+  - `client/src/main.jsx`: Imported `bootstrap/dist/js/bootstrap.bundle.min.js`.
+  - `client/index.html`: Set default theme to `light` (`data-bs-theme="light"`).
+  - `client/src/msquare-theme.css`: Enhanced mobile responsiveness with drawer layout and responsive chat/inbox pane switching.
+  - `client/src/pages/Login.jsx`: Pre-selected Branch Lead (`Aarav Sharma - aarav@msquare.com`) as primary login, added clean light theme styling.
+  - `client/src/pages/Dashboard.jsx`:
+    - Added dedicated direct **Sign Out** button in navbar.
+    - Set default theme to `light`.
+    - Restricted WhatsApp session connection & QR refresh to Branch Lead (`isBranchLead`).
+    - Added **`+ New Real Chat`** modal to initiate WhatsApp chats with any real phone number.
+    - Added live in-app **WhatsApp QR Code Pairing modal** with real-time SSE listener.
+    - Added real-time incoming WhatsApp message event handler syncing live customer chats.
+    - Added mobile hamburger menu and responsive chat navigation.
+- **Rollback Procedure**:
+  - To revert to Run 3 baseline: `git reset --hard a6cc7e1 && git clean -fd`
+
 ---
 
 ### How to Rollback If Stuck

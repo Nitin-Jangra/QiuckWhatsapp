@@ -1,27 +1,41 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAuth } from '../context/AuthContext';
 
 export default function Dashboard() {
   const { user, tenant, branch, token, logout, login } = useAuth();
 
-  // Navigation & Theme
-  const [activeView, setActiveView] = useState('inbox'); // 'dashboard', 'inbox', 'branches', 'channels'
-  const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'dark');
+  // Navigation, Theme & Responsiveness
+  const [activeView, setActiveView] = useState('inbox'); // 'inbox', 'branches', 'channels'
+  const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'light');
+  const [sidebarMobileOpen, setSidebarMobileOpen] = useState(false);
+  const [mobileChatOpen, setMobileChatOpen] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
 
-  // Data states
+  // Role permissions check: Only Branch Lead or Root Admin can manage WhatsApp socket/QR
+  const isBranchLead = user?.role_id === 'BRANCH_ADMIN' || user?.role_id === 'ROOT_ADMIN';
+
+  // Live WhatsApp Socket State
+  const [waStatus, setWaStatus] = useState('DISCONNECTED'); // DISCONNECTED, SCAN_QR, CONNECTED, CONNECTING
+  const [waQrDataUrl, setWaQrDataUrl] = useState(null);
+  const [waPhone, setWaPhone] = useState(null);
+  const [showQrModal, setShowQrModal] = useState(false);
+  const [qrLoading, setQrLoading] = useState(false);
+
+  // Backend Data
   const [branches, setBranches] = useState([]);
   const [usersList, setUsersList] = useState([]);
+
+  // Conversations State (Real CRM conversations)
   const [conversations, setConversations] = useState([
     {
-      id: 'conv-1',
-      customerName: 'Rahul Verma',
-      customerPhone: '+91 98765 12340',
+      id: 'conv-real-1',
+      customerName: 'Rahul Verma (Growth Inquiry)',
+      customerPhone: '+919876512340',
       branchName: 'Greater Noida Hub',
       branchId: 'aaaaaaaa-0001-4000-8000-000000000001',
       status: 'open',
-      assignedTo: 'Diya Patel (Helpdesk Specialist)',
-      assignedUserId: 'alpha_employee',
+      assignedTo: 'Aarav Sharma (Branch Lead)',
+      assignedUserId: 'alpha_branch_admin',
       unreadCount: 1,
       lastMessage: 'Hi, I need pricing information for the Enterprise growth automation package.',
       lastMessageTime: '10:42 AM',
@@ -38,9 +52,9 @@ export default function Dashboard() {
       }
     },
     {
-      id: 'conv-2',
-      customerName: 'Priya Sharma',
-      customerPhone: '+91 98111 54321',
+      id: 'conv-real-2',
+      customerName: 'Priya Sharma (Corporate Partner)',
+      customerPhone: '+919811154321',
       branchName: 'Greater Noida Hub',
       branchId: 'aaaaaaaa-0001-4000-8000-000000000001',
       status: 'open',
@@ -59,41 +73,31 @@ export default function Dashboard() {
         budget: '₹75,000 / mo',
         internalNote: 'Scheduled for tomorrow at 3 PM. Needs QR reconnection walkthrough.'
       }
-    },
-    {
-      id: 'conv-3',
-      customerName: 'Vikrant Roy',
-      customerPhone: '+91 97222 99887',
-      branchName: 'Noida HQ',
-      branchId: 'aaaaaaaa-0002-4000-8000-000000000002',
-      status: 'resolved',
-      assignedTo: 'Diya Patel (Helpdesk Specialist)',
-      assignedUserId: 'alpha_employee',
-      unreadCount: 0,
-      lastMessage: 'Thank you for resolving the branch configuration so quickly!',
-      lastMessageTime: 'Yesterday',
-      messages: [
-        { id: 'm31', fromMe: false, text: 'How do I add a 2nd branch in our tenant dashboard?', time: 'Yesterday 3:15 PM', status: 'read' },
-        { id: 'm32', fromMe: true, text: 'Navigate to Branches > Add New Branch and specify branch code.', time: 'Yesterday 3:20 PM', status: 'read' },
-        { id: 'm33', fromMe: false, text: 'Thank you for resolving the branch configuration so quickly!', time: 'Yesterday 3:30 PM', status: 'read' }
-      ],
-      leadInfo: {
-        stage: 'Active Client',
-        tags: ['Support', 'Resolved'],
-        budget: '₹30,000 / mo',
-        internalNote: 'Client onboarded on 2 branches.'
-      }
     }
   ]);
 
-  const [selectedConvId, setSelectedConvId] = useState('conv-1');
+  const [selectedConvId, setSelectedConvId] = useState('conv-real-1');
   const [chatFilter, setChatFilter] = useState('all'); // 'all', 'mine', 'unread', 'resolved'
   const [searchQuery, setSearchQuery] = useState('');
   const [replyText, setReplyText] = useState('');
   const [isSending, setIsSending] = useState(false);
+  const [sendError, setSendError] = useState('');
+
+  // New Real Chat Modal State
+  const [showNewChatModal, setShowNewChatModal] = useState(false);
+  const [newChatPhone, setNewChatPhone] = useState('');
+  const [newChatName, setNewChatName] = useState('');
+  const [newChatInitialMsg, setNewChatInitialMsg] = useState('Hi! Thank you for contacting M Square Professionals.');
+
+  const messagesEndRef = useRef(null);
 
   // Selected conversation
   const selectedConv = conversations.find(c => c.id === selectedConvId) || conversations[0];
+
+  // Auto-scroll messages to bottom
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [selectedConv?.messages]);
 
   // Theme switcher
   const toggleTheme = () => {
@@ -102,6 +106,85 @@ export default function Dashboard() {
     localStorage.setItem('theme', nextTheme);
     document.documentElement.setAttribute('data-bs-theme', nextTheme);
     document.documentElement.setAttribute('data-theme', nextTheme);
+  };
+
+  // Set default theme on mount
+  useEffect(() => {
+    document.documentElement.setAttribute('data-bs-theme', theme);
+    document.documentElement.setAttribute('data-theme', theme);
+  }, [theme]);
+
+  // Active tenant and branch IDs
+  const activeTenantId = user?.tenant_id || '11111111-1111-4000-8000-000000000001';
+  const activeBranchId = user?.branch_id || 'aaaaaaaa-0001-4000-8000-000000000001';
+
+  // Fetch WhatsApp session status
+  const checkWhatsAppStatus = async () => {
+    try {
+      const res = await fetch(`/api/whatsapp/status?tenantId=${activeTenantId}&branchId=${activeBranchId}`);
+      const json = await res.json();
+      if (json.success && json.data) {
+        setWaStatus(json.data.status);
+        setWaPhone(json.data.phone);
+        if (json.data.qrDataUrl) {
+          setWaQrDataUrl(json.data.qrDataUrl);
+        }
+      }
+    } catch (e) {
+      console.warn('Status check warning:', e.message);
+    }
+  };
+
+  // Connect WhatsApp session & load QR (Only Branch Lead)
+  const handleConnectWhatsApp = async () => {
+    if (!isBranchLead) {
+      alert('Access Restricted: Only Branch Lead can connect or refresh the WhatsApp session.');
+      return;
+    }
+    setQrLoading(true);
+    setShowQrModal(true);
+    try {
+      const res = await fetch('/api/whatsapp/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tenantId: activeTenantId, branchId: activeBranchId })
+      });
+      const json = await res.json();
+      if (json.data?.qrDataUrl) {
+        setWaQrDataUrl(json.data.qrDataUrl);
+      }
+      setWaStatus(json.data?.status || 'SCAN_QR');
+    } catch (err) {
+      console.error('Failed to initialize WhatsApp:', err);
+    } finally {
+      setQrLoading(false);
+    }
+  };
+
+  // Force Refresh WhatsApp Session (Only Branch Lead)
+  const handleRefreshWhatsApp = async () => {
+    if (!isBranchLead) {
+      alert('Access Restricted: Only Branch Lead can refresh the WhatsApp session.');
+      return;
+    }
+    setQrLoading(true);
+    setShowQrModal(true);
+    try {
+      const res = await fetch('/api/whatsapp/reconnect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tenantId: activeTenantId, branchId: activeBranchId })
+      });
+      const json = await res.json();
+      if (json.data?.qrDataUrl) {
+        setWaQrDataUrl(json.data.qrDataUrl);
+      }
+      setWaStatus('SCAN_QR');
+    } catch (err) {
+      console.error('Failed to reconnect WhatsApp:', err);
+    } finally {
+      setQrLoading(false);
+    }
   };
 
   // Load live branches and users from Express API
@@ -115,6 +198,7 @@ export default function Dashboard() {
       ]);
       if (bRes.success) setBranches(bRes.data || []);
       if (uRes.success) setUsersList(uRes.data || []);
+      await checkWhatsAppStatus();
     } catch (err) {
       console.error('Error refreshing backend data:', err);
     } finally {
@@ -126,11 +210,98 @@ export default function Dashboard() {
     refreshData();
   }, [token]);
 
-  // Send WhatsApp message
+  // Real-Time Server-Sent Events (SSE) Listener for live QR & messages
+  useEffect(() => {
+    const sseUrl = `/api/whatsapp/events?tenantId=${activeTenantId}&branchId=${activeBranchId}`;
+    const es = new EventSource(sseUrl);
+
+    es.addEventListener('qr', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.qrDataUrl) {
+          setWaQrDataUrl(data.qrDataUrl);
+          setWaStatus('SCAN_QR');
+        }
+      } catch (err) {}
+    });
+
+    es.addEventListener('status', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        setWaStatus(data.status);
+        if (data.phone) setWaPhone(data.phone);
+        if (data.status === 'CONNECTED') {
+          setWaQrDataUrl(null);
+        }
+      } catch (err) {}
+    });
+
+    es.addEventListener('message', (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        const incomingPhone = msg.customerPhone || msg.remoteJid?.split('@')[0];
+        const incomingText = msg.text || '';
+
+        setConversations(prev => {
+          const existing = prev.find(c => c.customerPhone.replace(/[^0-9]/g, '') === incomingPhone.replace(/[^0-9]/g, ''));
+          const newMsgObj = {
+            id: msg.messageId || 'm-' + Date.now(),
+            fromMe: msg.fromMe || false,
+            text: incomingText,
+            time: new Date(msg.timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+            status: 'delivered'
+          };
+
+          if (existing) {
+            return prev.map(c => {
+              if (c.id === existing.id) {
+                return {
+                  ...c,
+                  lastMessage: incomingText,
+                  lastMessageTime: 'Just now',
+                  unreadCount: c.id === selectedConvId ? c.unreadCount : c.unreadCount + 1,
+                  messages: [...c.messages, newMsgObj]
+                };
+              }
+              return c;
+            });
+          } else {
+            // New incoming customer conversation!
+            const newConv = {
+              id: 'conv-' + Date.now(),
+              customerName: `Customer (${incomingPhone})`,
+              customerPhone: '+' + incomingPhone,
+              branchName: 'Greater Noida Hub',
+              branchId: activeBranchId,
+              status: 'open',
+              assignedTo: user?.full_name || 'Aarav Sharma (Branch Lead)',
+              assignedUserId: user?.id || 'alpha_branch_admin',
+              unreadCount: 1,
+              lastMessage: incomingText,
+              lastMessageTime: 'Just now',
+              messages: [newMsgObj],
+              leadInfo: {
+                stage: 'New Inquiry',
+                tags: ['Live WhatsApp', 'Inbound'],
+                budget: 'TBD',
+                internalNote: 'Customer contacted directly via WhatsApp.'
+              }
+            };
+            return [newConv, ...prev];
+          }
+        });
+      } catch (err) {}
+    });
+
+    return () => es.close();
+  }, [activeTenantId, activeBranchId, selectedConvId]);
+
+  // Send WhatsApp message (supports any real number)
   const handleSendMessage = async (e) => {
     e?.preventDefault();
     if (!replyText.trim() || !selectedConv) return;
 
+    setSendError('');
     const messageText = replyText.trim();
     setReplyText('');
     setIsSending(true);
@@ -143,7 +314,7 @@ export default function Dashboard() {
       status: 'sent'
     };
 
-    // Update in-memory chat
+    // Optimistically update conversation
     setConversations(prev => prev.map(c => {
       if (c.id === selectedConv.id) {
         return {
@@ -156,39 +327,109 @@ export default function Dashboard() {
       return c;
     }));
 
-    // Send to WhatsApp API endpoint if branch connected
+    // Trigger backend WhatsApp connector dispatch to real number
     try {
-      await fetch('/api/whatsapp/send', {
+      const res = await fetch('/api/whatsapp/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          tenantId: selectedConv.branchId ? tenant?.id : '11111111-1111-4000-8000-000000000001',
-          branchId: selectedConv.branchId || 'aaaaaaaa-0001-4000-8000-000000000001',
+          tenantId: activeTenantId,
+          branchId: activeBranchId,
           to: selectedConv.customerPhone,
           text: messageText
         })
       });
-      // Update message status to delivered
-      setConversations(prev => prev.map(c => {
-        if (c.id === selectedConv.id) {
-          return {
-            ...c,
-            messages: c.messages.map(m => m.id === newMsg.id ? { ...m, status: 'delivered' } : m)
-          };
-        }
-        return c;
-      }));
-    } catch (e) {
-      // ignore in offline prototype
+      const data = await res.json();
+      if (!data.success) {
+        setSendError(data.error || 'Failed to dispatch via WhatsApp');
+      } else {
+        // Mark as delivered
+        setConversations(prev => prev.map(c => {
+          if (c.id === selectedConv.id) {
+            return {
+              ...c,
+              messages: c.messages.map(m => m.id === newMsg.id ? { ...m, status: 'delivered' } : m)
+            };
+          }
+          return c;
+        }));
+      }
+    } catch (err) {
+      setSendError(err.message);
     } finally {
       setIsSending(false);
     }
   };
 
+  // Start a new chat with a real customer phone number
+  const handleStartNewRealChat = async (e) => {
+    e?.preventDefault();
+    if (!newChatPhone.trim()) return;
+
+    const formattedPhone = newChatPhone.trim().startsWith('+') ? newChatPhone.trim() : '+' + newChatPhone.trim();
+    const customerTitle = newChatName.trim() || `Client (${formattedPhone})`;
+
+    const newConvId = 'conv-real-' + Date.now();
+    const newConv = {
+      id: newConvId,
+      customerName: customerTitle,
+      customerPhone: formattedPhone,
+      branchName: 'Greater Noida Hub',
+      branchId: activeBranchId,
+      status: 'open',
+      assignedTo: user?.full_name || 'Aarav Sharma (Branch Lead)',
+      assignedUserId: user?.id || 'alpha_branch_admin',
+      unreadCount: 0,
+      lastMessage: newChatInitialMsg || 'Conversation initiated',
+      lastMessageTime: 'Just now',
+      messages: newChatInitialMsg ? [
+        {
+          id: 'init-' + Date.now(),
+          fromMe: true,
+          text: newChatInitialMsg,
+          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          status: 'sent'
+        }
+      ] : [],
+      leadInfo: {
+        stage: 'Direct Outbound',
+        tags: ['New Lead', 'WhatsApp CRM'],
+        budget: '₹50,000 / mo',
+        internalNote: 'Real customer chat initiated by Branch Lead.'
+      }
+    };
+
+    setConversations(prev => [newConv, ...prev]);
+    setSelectedConvId(newConvId);
+    setShowNewChatModal(false);
+    setMobileChatOpen(true);
+
+    // If initial text is provided, dispatch via WhatsApp
+    if (newChatInitialMsg) {
+      try {
+        await fetch('/api/whatsapp/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            tenantId: activeTenantId,
+            branchId: activeBranchId,
+            to: formattedPhone,
+            text: newChatInitialMsg
+          })
+        });
+      } catch (e) {
+        // logged
+      }
+    }
+
+    setNewChatPhone('');
+    setNewChatName('');
+  };
+
   // Change conversation status
   const handleStatusChange = (newStatus) => {
     setConversations(prev => prev.map(c => {
-      if (c.id === selectedConv.id) {
+      if (c.id === selectedConv?.id) {
         return { ...c, status: newStatus };
       }
       return c;
@@ -202,7 +443,6 @@ export default function Dashboard() {
     }
     if (chatFilter === 'unread' && c.unreadCount === 0) return false;
     if (chatFilter === 'resolved' && c.status !== 'resolved') return false;
-    if (chatFilter === 'open' && c.status !== 'open') return false;
 
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
@@ -231,12 +471,20 @@ export default function Dashboard() {
   };
 
   return (
-    <div className="d-flex flex-column vh-100">
+    <div className="d-flex flex-column vh-100 overflow-hidden" style={{ backgroundColor: 'var(--bg-primary)' }}>
       {/* 1. M Square Navbar */}
       <nav className="navbar navbar-expand-lg msquare-navbar px-3">
         <div className="container-fluid d-flex align-items-center justify-content-between px-0">
-          {/* Logo & Brand Stack */}
+          {/* Mobile Menu Toggle & Brand */}
           <div className="d-flex align-items-center gap-2">
+            <button
+              className="btn btn-sm btn-msquare-outline d-lg-none py-1 px-2"
+              onClick={() => setSidebarMobileOpen(!sidebarMobileOpen)}
+              title="Toggle Menu"
+            >
+              <i className="bi bi-list fs-5"></i>
+            </button>
+
             <div className="msquare-logo-badge" title="M Square Professionals">
               <span>M²</span>
             </div>
@@ -252,27 +500,35 @@ export default function Dashboard() {
 
           {/* Right Action Bar */}
           <div className="d-flex align-items-center gap-2 gap-sm-3">
-            {/* Tenant & Branch Indicator */}
-            <div className="d-none d-lg-flex align-items-center gap-2 small">
-              <span className="badge bg-body-tertiary border text-body py-2 px-2.5">
-                <i className="bi bi-building me-1 text-warning"></i>
-                {tenant?.name || 'M Square Professionals'}
-              </span>
-              <span className="badge bg-body-tertiary border text-body py-2 px-2.5">
-                <i className="bi bi-geo-alt me-1 text-danger"></i>
-                {branch?.name || (user?.badge?.includes('Hub') ? user.badge : 'Greater Noida Hub')}
-              </span>
+            {/* Live WhatsApp Status Badge */}
+            <div className="d-flex align-items-center">
+              {waStatus === 'CONNECTED' ? (
+                <span className="badge bg-success-subtle text-success py-1.5 px-2.5 d-flex align-items-center gap-1">
+                  <i className="bi bi-check-circle-fill"></i>
+                  <span className="d-none d-sm-inline">WhatsApp: {waPhone ? `+${waPhone}` : 'Connected'}</span>
+                </span>
+              ) : (
+                <button
+                  type="button"
+                  className={`btn btn-sm ${isBranchLead ? 'btn-msquare-primary' : 'btn-outline-secondary'} py-1 px-2 d-flex align-items-center gap-1`}
+                  onClick={handleConnectWhatsApp}
+                  title={isBranchLead ? 'Connect or Pair WhatsApp' : 'Only Branch Lead can pair WhatsApp'}
+                >
+                  <i className="bi bi-qr-code"></i>
+                  <span className="d-none d-sm-inline">{waStatus === 'SCAN_QR' ? 'Scan QR' : 'WhatsApp Connect'}</span>
+                </button>
+              )}
             </div>
 
             {/* Sync Button */}
             <button
               type="button"
-              className="btn btn-sm btn-msquare-outline d-flex align-items-center gap-1"
+              className="btn btn-sm btn-msquare-outline d-none d-sm-flex align-items-center gap-1"
               onClick={refreshData}
               title="Sync conversations with backend"
             >
               <i className={`bi bi-arrow-repeat ${isSyncing ? 'text-warning spin' : 'text-success'}`}></i>
-              <span className="d-none d-sm-inline small">Sync</span>
+              <span className="small">Sync</span>
             </button>
 
             {/* Theme Toggle Button */}
@@ -289,101 +545,55 @@ export default function Dashboard() {
               )}
             </button>
 
-            {/* Switch Identity / User Profile Dropdown */}
-            <div className="dropdown">
-              <button
-                className="btn btn-sm btn-msquare-outline dropdown-toggle d-flex align-items-center gap-2 text-start"
-                type="button"
-                id="identityDropdown"
-                data-bs-toggle="dropdown"
-                aria-expanded="false"
+            {/* User Profile Badge */}
+            <div className="d-none d-md-flex align-items-center gap-2 text-start">
+              <div
+                className="rounded-circle text-white d-flex align-items-center justify-content-center fw-bold"
+                style={{
+                  width: '32px',
+                  height: '32px',
+                  fontSize: '0.85rem',
+                  background: 'linear-gradient(135deg, var(--brand-orange), var(--brand-orange-hover))'
+                }}
               >
-                <div
-                  className="rounded-circle text-white d-flex align-items-center justify-content-center fw-bold"
-                  style={{
-                    width: '28px',
-                    height: '28px',
-                    fontSize: '0.8rem',
-                    background: 'linear-gradient(135deg, var(--brand-orange), var(--brand-orange-hover))'
-                  }}
-                >
-                  {(user?.full_name?.charAt(0)) || 'M'}
+                {(user?.full_name?.charAt(0)) || 'A'}
+              </div>
+              <div className="text-truncate" style={{ maxWidth: '140px' }}>
+                <div className="fw-semibold lh-1 small text-body text-truncate">{user?.full_name}</div>
+                <div className="text-muted" style={{ fontSize: '0.7rem' }}>
+                  {user?.role_id === 'BRANCH_ADMIN' ? 'Branch Lead' : user?.role_id}
                 </div>
-                <div className="d-none d-sm-block text-truncate" style={{ maxWidth: '170px' }}>
-                  <div className="fw-semibold lh-1 small text-body">{user?.full_name || 'Aarav Sharma'}</div>
-                  <div className="text-muted" style={{ fontSize: '0.7rem' }}>
-                    {user?.role_id?.replace('_', ' ') || 'BRANCH ADMIN'}
-                  </div>
-                </div>
-              </button>
-              <ul className="dropdown-menu dropdown-menu-end shadow border" aria-labelledby="identityDropdown">
-                <li className="dropdown-header text-uppercase fw-bold text-muted small">Switch M Square Identity</li>
-                <li>
-                  <button
-                    className={`dropdown-item d-flex align-items-center justify-content-between py-2 ${user?.email === 'aarav@msquare.com' ? 'active' : ''}`}
-                    onClick={() => login('aarav@msquare.com')}
-                  >
-                    <div>
-                      <div className="fw-semibold small">Aarav Sharma (Branch Lead)</div>
-                      <div className="text-muted small" style={{ fontSize: '0.72rem' }}>Greater Noida Hub • Branch Lead</div>
-                    </div>
-                  </button>
-                </li>
-                <li>
-                  <button
-                    className={`dropdown-item d-flex align-items-center justify-content-between py-2 ${user?.email === 'diya@msquare.com' ? 'active' : ''}`}
-                    onClick={() => login('diya@msquare.com')}
-                  >
-                    <div>
-                      <div className="fw-semibold small">Diya Patel (Helpdesk Specialist)</div>
-                      <div className="text-muted small" style={{ fontSize: '0.72rem' }}>Greater Noida Support • Agent</div>
-                    </div>
-                  </button>
-                </li>
-                <li>
-                  <button
-                    className={`dropdown-item d-flex align-items-center justify-content-between py-2 ${user?.email === 'vikram@msquare.com' ? 'active' : ''}`}
-                    onClick={() => login('vikram@msquare.com')}
-                  >
-                    <div>
-                      <div className="fw-semibold small">Vikram Mehta (VP Operations)</div>
-                      <div className="text-muted small" style={{ fontSize: '0.72rem' }}>Corporate HQ • Tenant Admin</div>
-                    </div>
-                  </button>
-                </li>
-                <li>
-                  <button
-                    className={`dropdown-item d-flex align-items-center justify-content-between py-2 ${user?.email === 'superadmin@msquare.com' ? 'active' : ''}`}
-                    onClick={() => login('superadmin@msquare.com')}
-                  >
-                    <div>
-                      <div className="fw-semibold small">System Super Admin</div>
-                      <div className="text-muted small" style={{ fontSize: '0.72rem' }}>M Square Global • Global Super Admin</div>
-                    </div>
-                  </button>
-                </li>
-                <li><hr className="dropdown-divider my-1" /></li>
-                <li>
-                  <button className="dropdown-item text-danger small py-1.5" onClick={logout}>
-                    <i className="bi bi-box-arrow-right me-2"></i> Sign Out
-                  </button>
-                </li>
-              </ul>
+              </div>
             </div>
+
+            {/* Direct Logout Button */}
+            <button
+              onClick={logout}
+              className="btn btn-sm btn-outline-danger d-flex align-items-center gap-1 py-1.5 px-2.5"
+              title="Sign Out"
+            >
+              <i className="bi bi-box-arrow-right"></i>
+              <span className="d-none d-sm-inline small fw-semibold">Sign Out</span>
+            </button>
           </div>
         </div>
       </nav>
 
       {/* 2. Main App Container */}
-      <div className="app-container">
+      <div className="app-container position-relative">
+        {/* Mobile Backdrop */}
+        {sidebarMobileOpen && (
+          <div className="sidebar-backdrop" onClick={() => setSidebarMobileOpen(false)}></div>
+        )}
+
         {/* Left Sidebar */}
-        <aside className="app-sidebar py-3">
+        <aside className={`app-sidebar py-3 ${sidebarMobileOpen ? 'sidebar-mobile-open' : ''}`}>
           <div className="px-3 mb-2 small text-uppercase fw-bold text-muted" style={{ fontSize: '0.72rem', letterSpacing: '0.5px' }}>
             Helpdesk Views
           </div>
           <div
-            className={`sidebar-nav-link ${activeView === 'inbox' ? 'active' : ''}`}
-            onClick={() => { setActiveView('inbox'); setChatFilter('all'); }}
+            className={`sidebar-nav-link ${activeView === 'inbox' && chatFilter === 'all' ? 'active' : ''}`}
+            onClick={() => { setActiveView('inbox'); setChatFilter('all'); setSidebarMobileOpen(false); }}
           >
             <i className="bi bi-chat-dots-fill"></i>
             <span>All Inquiries</span>
@@ -391,7 +601,7 @@ export default function Dashboard() {
           </div>
           <div
             className={`sidebar-nav-link ${activeView === 'inbox' && chatFilter === 'mine' ? 'active' : ''}`}
-            onClick={() => { setActiveView('inbox'); setChatFilter('mine'); }}
+            onClick={() => { setActiveView('inbox'); setChatFilter('mine'); setSidebarMobileOpen(false); }}
           >
             <i className="bi bi-person-check-fill"></i>
             <span>My Chats</span>
@@ -401,7 +611,7 @@ export default function Dashboard() {
           </div>
           <div
             className={`sidebar-nav-link ${activeView === 'inbox' && chatFilter === 'unread' ? 'active' : ''}`}
-            onClick={() => { setActiveView('inbox'); setChatFilter('unread'); }}
+            onClick={() => { setActiveView('inbox'); setChatFilter('unread'); setSidebarMobileOpen(false); }}
           >
             <i className="bi bi-envelope-open-fill"></i>
             <span>Unread Queries</span>
@@ -411,7 +621,7 @@ export default function Dashboard() {
           </div>
           <div
             className={`sidebar-nav-link ${activeView === 'inbox' && chatFilter === 'resolved' ? 'active' : ''}`}
-            onClick={() => { setActiveView('inbox'); setChatFilter('resolved'); }}
+            onClick={() => { setActiveView('inbox'); setChatFilter('resolved'); setSidebarMobileOpen(false); }}
           >
             <i className="bi bi-check-circle-fill text-success"></i>
             <span>Resolved Queries</span>
@@ -421,59 +631,97 @@ export default function Dashboard() {
           </div>
 
           <div className="px-3 mt-4 mb-2 small text-uppercase fw-bold text-muted" style={{ fontSize: '0.72rem', letterSpacing: '0.5px' }}>
-            Operations & Channels
+            Operations & WhatsApp
           </div>
           <div
             className={`sidebar-nav-link ${activeView === 'channels' ? 'active' : ''}`}
-            onClick={() => setActiveView('channels')}
+            onClick={() => { setActiveView('channels'); setSidebarMobileOpen(false); }}
           >
             <i className="bi bi-qr-code text-success"></i>
-            <span>WhatsApp Channels</span>
+            <span>WhatsApp Channel</span>
+            {isBranchLead ? (
+              <span className="badge bg-success-subtle text-success ms-auto" style={{ fontSize: '0.68rem' }}>Lead Admin</span>
+            ) : (
+              <span className="badge bg-secondary-subtle text-muted ms-auto" style={{ fontSize: '0.68rem' }}><i className="bi bi-lock-fill"></i></span>
+            )}
           </div>
           <div
             className={`sidebar-nav-link ${activeView === 'branches' ? 'active' : ''}`}
-            onClick={() => setActiveView('branches')}
+            onClick={() => { setActiveView('branches'); setSidebarMobileOpen(false); }}
           >
             <i className="bi bi-diagram-3-fill text-primary"></i>
-            <span>Branches & Users</span>
+            <span>Branches & Roster</span>
           </div>
 
-          {/* Footer Ecosystem Badge */}
+          {/* Quick Real Chat Button */}
+          <div className="px-3 mt-4">
+            <button
+              className="btn btn-msquare-primary w-100 py-2 small fw-semibold d-flex align-items-center justify-content-center gap-2"
+              onClick={() => { setShowNewChatModal(true); setSidebarMobileOpen(false); }}
+            >
+              <i className="bi bi-telephone-plus-fill"></i>
+              <span>+ New Real Chat</span>
+            </button>
+          </div>
+
+          {/* Switch Identity for testing */}
           <div className="mt-auto px-3 pt-3 border-top" style={{ borderColor: 'var(--border-subtle)' }}>
-            <div className="small text-muted mb-1" style={{ fontSize: '0.72rem' }}>Platform Engine</div>
-            <div className="d-flex align-items-center gap-2">
-              <span className="badge bg-success-subtle text-success small py-1 px-2">
-                <i className="bi bi-lightning-charge-fill me-1"></i> WhatsApp Cloud Engine
-              </span>
+            <div className="small text-muted mb-1 fw-bold" style={{ fontSize: '0.72rem' }}>Role Switcher</div>
+            <div className="d-flex flex-column gap-1">
+              <button
+                className={`btn btn-xs text-start py-1 px-2 rounded small ${user?.email === 'aarav@msquare.com' ? 'btn-warning' : 'btn-outline-secondary'}`}
+                style={{ fontSize: '0.74rem' }}
+                onClick={() => login('aarav@msquare.com')}
+              >
+                <i className="bi bi-shield-check me-1"></i> Aarav (Branch Lead)
+              </button>
+              <button
+                className={`btn btn-xs text-start py-1 px-2 rounded small ${user?.email === 'diya@msquare.com' ? 'btn-success' : 'btn-outline-secondary'}`}
+                style={{ fontSize: '0.74rem' }}
+                onClick={() => login('diya@msquare.com')}
+              >
+                <i className="bi bi-person me-1"></i> Diya (Support Agent)
+              </button>
             </div>
           </div>
         </aside>
 
         {/* 3. Center Content Area */}
         {activeView === 'inbox' ? (
-          <div className="d-flex flex-grow-1 overflow-hidden">
+          <div className={`d-flex flex-grow-1 overflow-hidden ${mobileChatOpen ? 'mobile-show-chat' : 'mobile-hide-chat'}`}>
             {/* Column 1: Conversation List Pane */}
             <div className="conversation-list-pane">
-              {/* Search & Filter Header */}
+              {/* Header with Search and New Real Chat button */}
               <div className="p-3 border-bottom" style={{ borderColor: 'var(--border-subtle)' }}>
-                <div className="input-group mb-2">
-                  <span className="input-group-text border-0" style={{ backgroundColor: 'var(--bg-input)', color: 'var(--text-muted)' }}>
-                    <i className="bi bi-search"></i>
-                  </span>
-                  <input
-                    type="text"
-                    className="form-control message-input form-control-sm"
-                    placeholder="Search client name or phone..."
-                    value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                  />
+                <div className="d-flex gap-2 mb-2">
+                  <div className="input-group flex-grow-1">
+                    <span className="input-group-text border-0" style={{ backgroundColor: 'var(--bg-input)', color: 'var(--text-muted)' }}>
+                      <i className="bi bi-search"></i>
+                    </span>
+                    <input
+                      type="text"
+                      className="form-control message-input form-control-sm"
+                      placeholder="Search phone, name..."
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                    />
+                  </div>
+                  <button
+                    className="btn btn-sm btn-msquare-primary text-nowrap px-2"
+                    onClick={() => setShowNewChatModal(true)}
+                    title="Send WhatsApp message to real phone number"
+                  >
+                    <i className="bi bi-plus-lg"></i>
+                  </button>
                 </div>
+
+                {/* Filter Pills */}
                 <div className="d-flex gap-1 overflow-x-auto pb-1">
                   <button
                     className={`btn btn-sm ${chatFilter === 'all' ? 'btn-msquare-primary py-0 px-2' : 'btn-msquare-outline py-0 px-2'}`}
                     onClick={() => setChatFilter('all')}
                   >
-                    All
+                    All ({conversations.length})
                   </button>
                   <button
                     className={`btn btn-sm ${chatFilter === 'mine' ? 'btn-msquare-primary py-0 px-2' : 'btn-msquare-outline py-0 px-2'}`}
@@ -496,12 +744,20 @@ export default function Dashboard() {
                 </div>
               </div>
 
-              {/* Conversations Scrollable List */}
+              {/* Conversations List */}
               <div className="flex-grow-1 overflow-y-auto">
                 {filteredConversations.length === 0 ? (
                   <div className="text-center py-5 text-muted small">
                     <i className="bi bi-chat-square-text fs-2 d-block mb-2 text-secondary"></i>
-                    No conversations found
+                    No conversations found.
+                    <div className="mt-2">
+                      <button
+                        className="btn btn-sm btn-msquare-outline"
+                        onClick={() => setShowNewChatModal(true)}
+                      >
+                        Start Real WhatsApp Chat
+                      </button>
+                    </div>
                   </div>
                 ) : (
                   filteredConversations.map((c) => {
@@ -510,7 +766,10 @@ export default function Dashboard() {
                       <div
                         key={c.id}
                         className={`conversation-item ${isSelected ? 'active' : ''}`}
-                        onClick={() => setSelectedConvId(c.id)}
+                        onClick={() => {
+                          setSelectedConvId(c.id);
+                          setMobileChatOpen(true);
+                        }}
                       >
                         <div className="d-flex justify-content-between align-items-start mb-1">
                           <span className="fw-semibold text-truncate text-body" style={{ maxWidth: '190px' }}>
@@ -522,7 +781,7 @@ export default function Dashboard() {
                         </div>
                         <div className="d-flex align-items-center gap-1 mb-1">
                           <span className="badge bg-body-tertiary border text-body" style={{ fontSize: '0.68rem' }}>
-                            {c.branchName}
+                            {c.customerPhone}
                           </span>
                           {getStatusBadge(c.status)}
                           {c.unreadCount > 0 && (
@@ -547,28 +806,37 @@ export default function Dashboard() {
                 <>
                   {/* Chat Header */}
                   <div
-                    className="d-flex justify-content-between align-items-center px-4 py-3 border-bottom"
+                    className="d-flex justify-content-between align-items-center px-3 px-sm-4 py-2.5 border-bottom"
                     style={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border-subtle)' }}
                   >
-                    <div className="d-flex align-items-center gap-3">
+                    <div className="d-flex align-items-center gap-2 gap-sm-3">
+                      {/* Mobile Back Button */}
+                      <button
+                        className="btn btn-sm btn-outline-secondary d-md-none py-1 px-2"
+                        onClick={() => setMobileChatOpen(false)}
+                        title="Back to inquiries list"
+                      >
+                        <i className="bi bi-chevron-left"></i>
+                      </button>
+
                       <div
-                        className="rounded-circle text-white d-flex align-items-center justify-content-center fw-bold"
+                        className="rounded-circle text-white d-flex align-items-center justify-content-center fw-bold flex-shrink-0"
                         style={{
-                          width: '40px',
-                          height: '40px',
+                          width: '38px',
+                          height: '38px',
                           background: 'linear-gradient(135deg, var(--brand-blue), var(--brand-blue-hover))'
                         }}
                       >
                         {selectedConv.customerName.charAt(0)}
                       </div>
-                      <div>
-                        <div className="fw-bold mb-0 text-body d-flex align-items-center gap-2">
-                          {selectedConv.customerName}
-                          <span className="badge bg-body-tertiary text-muted border small fw-normal">
+                      <div className="text-truncate">
+                        <div className="fw-bold mb-0 text-body d-flex align-items-center gap-2 text-truncate">
+                          <span className="text-truncate">{selectedConv.customerName}</span>
+                          <span className="badge bg-body-tertiary text-muted border small fw-normal d-none d-sm-inline-block">
                             {selectedConv.customerPhone}
                           </span>
                         </div>
-                        <div className="text-muted small d-flex align-items-center gap-2" style={{ fontSize: '0.75rem' }}>
+                        <div className="text-muted small d-flex align-items-center gap-2" style={{ fontSize: '0.74rem' }}>
                           <span><i className="bi bi-geo-alt me-1 text-danger"></i>{selectedConv.branchName}</span>
                           <span>•</span>
                           <span><i className="bi bi-person me-1 text-primary"></i>{selectedConv.assignedTo}</span>
@@ -576,11 +844,11 @@ export default function Dashboard() {
                       </div>
                     </div>
 
-                    {/* Status & Transfer Controls */}
+                    {/* Status & WhatsApp session refresh indicator */}
                     <div className="d-flex align-items-center gap-2">
                       <select
-                        className="form-select form-select-sm message-input"
-                        style={{ width: '130px' }}
+                        className="form-select form-select-sm message-input d-none d-sm-block"
+                        style={{ width: '120px' }}
                         value={selectedConv.status}
                         onChange={(e) => handleStatusChange(e.target.value)}
                       >
@@ -590,18 +858,34 @@ export default function Dashboard() {
                         <option value="closed">⚪ Closed</option>
                       </select>
 
-                      <button
-                        className="btn btn-sm btn-msquare-outline"
-                        title="Transfer conversation to another agent"
-                        onClick={() => alert(`Transfer ${selectedConv.customerName} to another branch agent.`)}
-                      >
-                        <i className="bi bi-arrow-left-right me-1"></i> Transfer
-                      </button>
+                      {isBranchLead && (
+                        <button
+                          className="btn btn-sm btn-msquare-outline d-none d-md-inline-flex align-items-center gap-1"
+                          onClick={handleRefreshWhatsApp}
+                          title="Refresh WhatsApp Session & QR (Branch Lead only)"
+                        >
+                          <i className="bi bi-arrow-clockwise text-warning"></i>
+                          <span className="small">Refresh WA</span>
+                        </button>
+                      )}
                     </div>
                   </div>
 
+                  {sendError && (
+                    <div className="alert alert-warning py-1 px-3 small m-2 mb-0 d-flex align-items-center justify-content-between">
+                      <span><i className="bi bi-exclamation-triangle me-2"></i> {sendError}</span>
+                      <button className="btn btn-xs btn-link p-0 text-dark" onClick={() => setSendError('')}>×</button>
+                    </div>
+                  )}
+
                   {/* Message History Thread */}
                   <div className="messages-container">
+                    <div className="text-center my-2">
+                      <span className="badge bg-body-tertiary border text-muted small py-1 px-2.5">
+                        <i className="bi bi-lock-fill me-1"></i> WhatsApp End-to-End Encrypted Session
+                      </span>
+                    </div>
+
                     {selectedConv.messages.map((m) => (
                       <div key={m.id} className={`message-bubble ${m.fromMe ? 'outbound' : 'inbound'}`}>
                         <div className="message-text">{m.text}</div>
@@ -621,6 +905,7 @@ export default function Dashboard() {
                         </div>
                       </div>
                     ))}
+                    <div ref={messagesEndRef} />
                   </div>
 
                   {/* Message Composer */}
@@ -631,48 +916,41 @@ export default function Dashboard() {
                         type="button"
                         className="btn btn-sm btn-msquare-outline text-nowrap py-0 px-2"
                         style={{ fontSize: '0.75rem' }}
-                        onClick={() => setReplyText('Hello! Thanks for reaching out to M Square Professionals. How can I help you today?')}
+                        onClick={() => setReplyText('Hello! Thanks for reaching out to M Square Professionals. How can we assist you today?')}
                       >
-                        👋 Welcome Greeting
+                        👋 Greeting
                       </button>
                       <button
                         type="button"
                         className="btn btn-sm btn-msquare-outline text-nowrap py-0 px-2"
                         style={{ fontSize: '0.75rem' }}
-                        onClick={() => setReplyText('I have scheduled your demo session. Our branch specialist will contact you shortly.')}
+                        onClick={() => setReplyText('Sure! I can arrange an onboarding session for you. What time works best?')}
                       >
-                        📅 Demo Confirmation
+                        📅 Schedule
                       </button>
                       <button
                         type="button"
                         className="btn btn-sm btn-msquare-outline text-nowrap py-0 px-2"
                         style={{ fontSize: '0.75rem' }}
-                        onClick={() => setReplyText('Your query has been resolved! Please let us know if you need anything else.')}
+                        onClick={() => setReplyText('Here is our WhatsApp Helpdesk overview documentation.')}
                       >
-                        ✅ Query Resolved
+                        📄 Doc Link
                       </button>
                     </div>
 
                     {/* Composer Input Bar */}
                     <form onSubmit={handleSendMessage} className="d-flex align-items-center gap-2">
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-msquare-outline"
-                        title="Attach Media / Document"
-                      >
-                        <i className="bi bi-paperclip"></i>
-                      </button>
                       <input
                         type="text"
                         className="form-control message-input"
-                        placeholder="Type a WhatsApp reply (Enter to send)..."
+                        placeholder={`Message ${selectedConv.customerPhone}...`}
                         value={replyText}
                         onChange={(e) => setReplyText(e.target.value)}
                         disabled={isSending}
                       />
                       <button
                         type="submit"
-                        className="btn btn-msquare-primary px-3"
+                        className="btn btn-msquare-primary px-3 text-nowrap"
                         disabled={isSending || !replyText.trim()}
                       >
                         {isSending ? (
@@ -704,16 +982,16 @@ export default function Dashboard() {
                 }}
               >
                 <div className="small fw-bold text-uppercase text-muted mb-3" style={{ fontSize: '0.74rem', letterSpacing: '0.5px' }}>
-                  <i className="bi bi-person-lines-fill me-1 text-warning"></i> Client CRM Profile
+                  <i className="bi bi-person-lines-fill me-1 text-warning"></i> Client Profile
                 </div>
 
                 <div className="text-center mb-3 pb-3 border-bottom" style={{ borderColor: 'var(--border-subtle)' }}>
                   <div
                     className="rounded-circle text-white d-flex align-items-center justify-content-center fw-bold mx-auto mb-2"
                     style={{
-                      width: '56px',
-                      height: '56px',
-                      fontSize: '1.25rem',
+                      width: '52px',
+                      height: '52px',
+                      fontSize: '1.2rem',
                       background: 'linear-gradient(135deg, var(--brand-orange), var(--brand-orange-hover))'
                     }}
                   >
@@ -768,7 +1046,7 @@ export default function Dashboard() {
           </div>
         ) : activeView === 'channels' ? (
           /* WhatsApp Channels View */
-          <div className="flex-grow-1 p-4 overflow-y-auto" style={{ backgroundColor: 'var(--bg-primary)' }}>
+          <div className="flex-grow-1 p-3 p-md-4 overflow-y-auto" style={{ backgroundColor: 'var(--bg-primary)' }}>
             <div className="d-flex justify-content-between align-items-center mb-4 pb-2 border-bottom" style={{ borderColor: 'var(--border-subtle)' }}>
               <div>
                 <h4 className="fw-bold mb-1 d-flex align-items-center gap-2">
@@ -776,50 +1054,78 @@ export default function Dashboard() {
                   M Square Branch WhatsApp Channels
                 </h4>
                 <p className="text-muted small mb-0">
-                  Manage dedicated WhatsApp connections and pairing codes per branch.
+                  {isBranchLead
+                    ? 'Branch Lead Mode: You have administrative permissions to connect, scan QR, and refresh WhatsApp.'
+                    : 'Support Agent View: WhatsApp connection management is reserved for the Branch Lead.'}
                 </p>
               </div>
-              <a
-                href="http://localhost:5000"
-                target="_blank"
-                rel="noreferrer"
-                className="btn btn-msquare-primary btn-sm"
-              >
-                <i className="bi bi-qr-code-scan me-1"></i> Open Live QR Hub
-              </a>
+
+              {isBranchLead && (
+                <button
+                  className="btn btn-msquare-primary btn-sm"
+                  onClick={handleConnectWhatsApp}
+                >
+                  <i className="bi bi-qr-code-scan me-1"></i> Scan QR / Connect
+                </button>
+              )}
             </div>
 
             <div className="row g-4">
-              <div className="col-md-6">
+              <div className="col-lg-6">
                 <div className="card h-100 p-4 border" style={{ borderColor: 'var(--border-strong)' }}>
                   <div className="d-flex justify-content-between align-items-center mb-3">
                     <h5 className="fw-bold mb-0">Greater Noida Hub</h5>
-                    <span className="badge bg-success-subtle text-success">Active Branch</span>
+                    <span className={`badge ${waStatus === 'CONNECTED' ? 'bg-success-subtle text-success' : 'bg-warning-subtle text-warning'}`}>
+                      {waStatus}
+                    </span>
                   </div>
                   <p className="text-muted small mb-3">
-                    Branch Code: <code>GNOIDA</code> | Phone: +91 98765 43210
+                    Branch Code: <code>GNOIDA</code> | Assigned Lead: <strong>Aarav Sharma</strong>
                   </p>
+
                   <div className="p-3 rounded mb-3" style={{ backgroundColor: 'var(--bg-secondary)', border: '1px dashed var(--border-strong)' }}>
-                    <div className="d-flex align-items-center gap-2 text-success small fw-semibold">
-                      <i className="bi bi-check-circle-fill"></i>
-                      <span>WhatsApp Socket Connected</span>
+                    <div className="d-flex align-items-center gap-2 small fw-semibold">
+                      {waStatus === 'CONNECTED' ? (
+                        <>
+                          <i className="bi bi-check-circle-fill text-success"></i>
+                          <span className="text-success">WhatsApp Socket Active: {waPhone ? `+${waPhone}` : 'Connected'}</span>
+                        </>
+                      ) : (
+                        <>
+                          <i className="bi bi-qr-code text-warning"></i>
+                          <span className="text-warning">Ready to Connect QR Code</span>
+                        </>
+                      )}
                     </div>
-                    <div className="text-muted small mt-1">Multi-device auth state stored isolated in <code>wa_sessions/11111111-1111.../aaaaaaaa-0001...</code></div>
+                    <div className="text-muted small mt-1">Multi-device auth isolated in <code>wa_sessions/{activeTenantId}/{activeBranchId}</code></div>
                   </div>
+
                   <div className="d-flex gap-2 mt-auto">
-                    <a
-                      href="http://localhost:5000/?tenant=11111111-1111-4000-8000-000000000001&branch=aaaaaaaa-0001-4000-8000-000000000001"
-                      target="_blank"
-                      rel="noreferrer"
-                      className="btn btn-sm btn-msquare-outline"
-                    >
-                      <i className="bi bi-arrow-clockwise me-1"></i> Re-pair QR
-                    </a>
+                    {isBranchLead ? (
+                      <>
+                        <button
+                          className="btn btn-sm btn-msquare-primary"
+                          onClick={handleConnectWhatsApp}
+                        >
+                          <i className="bi bi-qr-code me-1"></i> {waStatus === 'CONNECTED' ? 'View Connection' : 'Scan QR Code'}
+                        </button>
+                        <button
+                          className="btn btn-sm btn-msquare-outline"
+                          onClick={handleRefreshWhatsApp}
+                        >
+                          <i className="bi bi-arrow-clockwise me-1 text-warning"></i> Refresh Session
+                        </button>
+                      </>
+                    ) : (
+                      <span className="badge bg-secondary-subtle text-muted py-2 px-3">
+                        <i className="bi bi-lock-fill me-1"></i> Restricted: Only Branch Lead can refresh session
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>
 
-              <div className="col-md-6">
+              <div className="col-lg-6">
                 <div className="card h-100 p-4 border" style={{ borderColor: 'var(--border-strong)' }}>
                   <div className="d-flex justify-content-between align-items-center mb-3">
                     <h5 className="fw-bold mb-0">Noida HQ</h5>
@@ -829,33 +1135,23 @@ export default function Dashboard() {
                     Branch Code: <code>NOIDAHQ</code> | Phone: +91 98765 43211
                   </p>
                   <div className="p-3 rounded mb-3" style={{ backgroundColor: 'var(--bg-secondary)', border: '1px dashed var(--border-strong)' }}>
-                    <div className="d-flex align-items-center gap-2 text-warning small fw-semibold">
-                      <i className="bi bi-qr-code"></i>
-                      <span>Ready to Pair WhatsApp Web</span>
+                    <div className="d-flex align-items-center gap-2 text-muted small fw-semibold">
+                      <i className="bi bi-circle"></i>
+                      <span>Secondary Branch Channel</span>
                     </div>
-                    <div className="text-muted small mt-1">Ready for QR scan or 8-digit mobile pairing code.</div>
-                  </div>
-                  <div className="d-flex gap-2 mt-auto">
-                    <a
-                      href="http://localhost:5000/?tenant=11111111-1111-4000-8000-000000000001&branch=aaaaaaaa-0002-4000-8000-000000000002"
-                      target="_blank"
-                      rel="noreferrer"
-                      className="btn btn-sm btn-msquare-primary"
-                    >
-                      <i className="bi bi-qr-code me-1"></i> Connect WhatsApp
-                    </a>
+                    <div className="text-muted small mt-1">Ready for dedicated secondary device pairing.</div>
                   </div>
                 </div>
               </div>
             </div>
           </div>
         ) : (
-          /* Branches & Users View */
-          <div className="flex-grow-1 p-4 overflow-y-auto" style={{ backgroundColor: 'var(--bg-primary)' }}>
+          /* Branches & Users Roster View */
+          <div className="flex-grow-1 p-3 p-md-4 overflow-y-auto" style={{ backgroundColor: 'var(--bg-primary)' }}>
             <div className="d-flex justify-content-between align-items-center mb-4 pb-2 border-bottom" style={{ borderColor: 'var(--border-subtle)' }}>
               <div>
                 <h4 className="fw-bold mb-1">M Square Branches & Team Roster</h4>
-                <p className="text-muted small mb-0">Manage branches, employee roles, and cross-branch permissions.</p>
+                <p className="text-muted small mb-0">Branch Leads manage WhatsApp connections; agents handle chat workflows.</p>
               </div>
             </div>
 
@@ -869,7 +1165,6 @@ export default function Dashboard() {
                         <tr>
                           <th>Branch Name</th>
                           <th>Code</th>
-                          <th>Phone</th>
                           <th>Status</th>
                         </tr>
                       </thead>
@@ -878,7 +1173,6 @@ export default function Dashboard() {
                           <tr key={b.id}>
                             <td className="fw-semibold">{b.name}</td>
                             <td><code>{b.code}</code></td>
-                            <td>{b.phone}</td>
                             <td><span className="badge bg-success-subtle text-success">{b.status}</span></td>
                           </tr>
                         ))}
@@ -904,7 +1198,11 @@ export default function Dashboard() {
                         {usersList.map(u => (
                           <tr key={u.id}>
                             <td className="fw-semibold">{u.full_name}</td>
-                            <td><span className="badge bg-secondary-subtle text-secondary">{u.role_id}</span></td>
+                            <td>
+                              <span className={`badge ${u.role_id === 'BRANCH_ADMIN' ? 'bg-warning-subtle text-warning' : 'bg-secondary-subtle text-secondary'}`}>
+                                {u.role_id === 'BRANCH_ADMIN' ? 'Branch Lead' : u.role_id}
+                              </span>
+                            </td>
                             <td>{branches.find(b => b.id === u.branch_id)?.name || 'HQ / Global'}</td>
                           </tr>
                         ))}
@@ -917,6 +1215,149 @@ export default function Dashboard() {
           </div>
         )}
       </div>
+
+      {/* 4. MODAL: Live In-App WhatsApp QR Code Pairing Modal */}
+      {showQrModal && (
+        <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 1060 }}>
+          <div className="modal-dialog modal-dialog-centered" style={{ maxWidth: '420px' }}>
+            <div className="modal-content border-0 shadow-lg" style={{ borderRadius: '16px' }}>
+              <div className="modal-header border-bottom">
+                <h5 className="modal-title fw-bold d-flex align-items-center gap-2">
+                  <i className="bi bi-whatsapp text-success fs-5"></i>
+                  <span>WhatsApp Branch Pairing</span>
+                </h5>
+                <button type="button" className="btn-close" onClick={() => setShowQrModal(false)}></button>
+              </div>
+              <div className="modal-body text-center p-4">
+                <p className="text-muted small mb-3">
+                  Scan this QR code from your WhatsApp mobile app:
+                  <br /><strong>Linked Devices &gt; Link a Device</strong>
+                </p>
+
+                <div
+                  className="p-3 rounded mx-auto mb-3 d-flex align-items-center justify-content-center"
+                  style={{
+                    width: '260px',
+                    height: '260px',
+                    backgroundColor: '#ffffff',
+                    border: '2px dashed var(--brand-orange)',
+                    borderRadius: '12px'
+                  }}
+                >
+                  {qrLoading ? (
+                    <div className="text-center">
+                      <div className="spinner-border text-warning mb-2" role="status"></div>
+                      <div className="small text-muted">Generating fresh session QR...</div>
+                    </div>
+                  ) : waStatus === 'CONNECTED' ? (
+                    <div className="text-center text-success">
+                      <i className="bi bi-check-circle-fill display-4 mb-2"></i>
+                      <div className="fw-bold">Connected Successfully!</div>
+                      <div className="small text-muted mt-1">{waPhone ? `+${waPhone}` : 'Device linked'}</div>
+                    </div>
+                  ) : waQrDataUrl ? (
+                    <img
+                      src={waQrDataUrl}
+                      alt="WhatsApp QR Code"
+                      style={{ width: '100%', height: '100%', objectFit: 'contain' }}
+                    />
+                  ) : (
+                    <div className="text-center text-muted small">
+                      <i className="bi bi-qr-code fs-1 d-block mb-1"></i>
+                      Click Refresh to load QR
+                    </div>
+                  )}
+                </div>
+
+                <div className="d-flex justify-content-between align-items-center">
+                  <span className="badge bg-secondary-subtle text-secondary small">
+                    Status: {waStatus}
+                  </span>
+                  <button
+                    className="btn btn-sm btn-msquare-outline"
+                    onClick={handleRefreshWhatsApp}
+                    disabled={qrLoading}
+                  >
+                    <i className="bi bi-arrow-clockwise me-1"></i> Refresh QR
+                  </button>
+                </div>
+              </div>
+              <div className="modal-footer border-top">
+                <button type="button" className="btn btn-secondary btn-sm" onClick={() => setShowQrModal(false)}>
+                  Done
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* 5. MODAL: Start New Real Chat (with any real phone number) */}
+      {showNewChatModal && (
+        <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 1060 }}>
+          <div className="modal-dialog modal-dialog-centered" style={{ maxWidth: '440px' }}>
+            <div className="modal-content border-0 shadow-lg" style={{ borderRadius: '16px' }}>
+              <div className="modal-header border-bottom">
+                <h5 className="modal-title fw-bold d-flex align-items-center gap-2">
+                  <i className="bi bi-telephone-plus-fill text-success"></i>
+                  <span>Start Real WhatsApp Chat</span>
+                </h5>
+                <button type="button" className="btn-close" onClick={() => setShowNewChatModal(false)}></button>
+              </div>
+              <form onSubmit={handleStartNewRealChat}>
+                <div className="modal-body p-4">
+                  <p className="text-muted small mb-3">
+                    Enter any real phone number with country code to start a conversation through your connected branch account.
+                  </p>
+
+                  <div className="mb-3">
+                    <label className="form-label small fw-semibold text-muted">Customer Phone Number</label>
+                    <input
+                      type="text"
+                      className="form-control message-input"
+                      placeholder="e.g. +91 9876543210"
+                      value={newChatPhone}
+                      onChange={(e) => setNewChatPhone(e.target.value)}
+                      required
+                    />
+                    <div className="text-muted small mt-1" style={{ fontSize: '0.72rem' }}>Include country code (e.g. +91 for India, +1 for US).</div>
+                  </div>
+
+                  <div className="mb-3">
+                    <label className="form-label small fw-semibold text-muted">Customer Name (Optional)</label>
+                    <input
+                      type="text"
+                      className="form-control message-input"
+                      placeholder="e.g. Manish Sharma"
+                      value={newChatName}
+                      onChange={(e) => setNewChatName(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="mb-3">
+                    <label className="form-label small fw-semibold text-muted">Initial Outbound Message</label>
+                    <textarea
+                      className="form-control message-input"
+                      rows="3"
+                      value={newChatInitialMsg}
+                      onChange={(e) => setNewChatInitialMsg(e.target.value)}
+                      placeholder="Type initial message to send..."
+                    ></textarea>
+                  </div>
+                </div>
+                <div className="modal-footer border-top">
+                  <button type="button" className="btn btn-outline-secondary btn-sm" onClick={() => setShowNewChatModal(false)}>
+                    Cancel
+                  </button>
+                  <button type="submit" className="btn btn-msquare-primary btn-sm px-3">
+                    <i className="bi bi-send-fill me-1"></i> Send & Open Chat
+                  </button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
