@@ -68,7 +68,7 @@ Open [http://localhost:5000](http://localhost:5000) to test:
 
 *This section is updated on every run to track added/removed files and features so that changes can be rolled back safely if needed.*
 
-### Run 1 — Phase 0: WhatsApp Feasibility Prototype (2026-10-21)
+### Run 1 — Phase 0: WhatsApp Feasibility Prototype (2026-10-21) [Commit: `c0573db`]
 - **Objective**: Validate WhatsApp Web multi-device connection, QR re-authentication, branch session isolation, deduplication, and test harness.
 - **Status**: Completed & Verified (7/7 tests passing).
 - **Added Files**:
