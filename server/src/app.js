@@ -3,6 +3,11 @@ const express = require('express');
 const cors = require('cors');
 const path = require('path');
 const whatsappRoutes = require('./routes/whatsapp');
+const authRoutes = require('./routes/auth');
+const tenantRoutes = require('./routes/tenants');
+const branchRoutes = require('./routes/branches');
+const userRoutes = require('./routes/users');
+const roleRoutes = require('./routes/roles');
 const connector = require('./whatsapp/connector-service');
 
 const app = express();
@@ -16,6 +21,13 @@ app.use(express.urlencoded({ extended: true }));
 
 // Serve static prototype UI
 app.use(express.static(path.join(__dirname, '../public')));
+
+// Phase 1: Authentication and Management Routes
+app.use('/api/auth', authRoutes);
+app.use('/api/tenants', tenantRoutes);
+app.use('/api/branches', branchRoutes);
+app.use('/api/users', userRoutes);
+app.use('/api/roles', roleRoutes);
 
 // WhatsApp connector routes
 app.use('/api/whatsapp', whatsappRoutes);

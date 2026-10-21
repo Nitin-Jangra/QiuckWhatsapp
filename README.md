@@ -89,6 +89,33 @@ Open [http://localhost:5000](http://localhost:5000) to test:
   - To clean up generated session data: `rm -r server/wa_sessions/`
   - To restore repository before this run: `git clean -fd` or remove `server/` directory.
 
+### Run 2 — Phase 1: Authentication & Multi-Tenant Foundation (2026-10-21)
+- **Objective**: Implement Supabase schema migrations, Express authentication middleware, RBAC, tenant & branch management APIs, strict tenant isolation, automated auth tests, and React/Bootstrap frontend client.
+- **Status**: Completed & Verified (12/12 tests passing, Vite frontend bundle built).
+- **Added Files**:
+  - `server/src/db/migrations/20261021_phase1_schema.sql` — Supabase PostgreSQL schema with RLS policies, tables (`tenants`, `branches`, `roles`, `permissions`, `role_permissions`, `users`, `feature_toggles`), and seed data.
+  - `server/src/db/index.js` — Database service supporting Supabase client with local zero-config mock store fallback.
+  - `server/src/middleware/auth.js` — Express auth middleware (`authenticate`, `requireRole`, `requirePermission`, `enforceTenantScope`).
+  - `server/src/routes/auth.js` — `/api/auth/me` and `/api/auth/login`.
+  - `server/src/routes/tenants.js` — Root Admin tenant CRUD routes.
+  - `server/src/routes/branches.js` — Tenant-isolated branch CRUD routes.
+  - `server/src/routes/users.js` — Tenant user management & role boundary validation routes.
+  - `server/src/routes/roles.js` — System roles and permission matrix listing route.
+  - `server/tests/auth-tenant.test.js` — Automated tests covering token authentication, role validation, cross-tenant boundary security, branch and user provisioning.
+  - `client/package.json` — Frontend workspace dependencies (React, Bootstrap 5, Bootstrap Icons, Vite).
+  - `client/vite.config.js` — Vite configuration with port 3000 and `/api` proxy to port 5000.
+  - `client/index.html` — HTML5 entry template.
+  - `client/src/main.jsx` — React root bootstrap with Bootstrap styles.
+  - `client/src/App.jsx` — Router shell switching between Login and Dashboard.
+  - `client/src/context/AuthContext.jsx` — Authentication state, token persistence, role/permission checkers.
+  - `client/src/pages/Login.jsx` — Responsive Bootstrap login screen with one-click persona switcher for evaluation.
+  - `client/src/pages/Dashboard.jsx` — Multi-tenant management shell (Branches, Users, Roles, WhatsApp channels).
+- **Modifications**:
+  - `package.json`: Added `client` (`npm run dev --workspace=client`) and `client:build` workspace scripts.
+  - `server/src/app.js`: Mounted `/api/auth`, `/api/tenants`, `/api/branches`, `/api/users`, and `/api/roles` routes.
+- **Rollback Procedure**:
+  - To revert to Phase 0 baseline: `git reset --hard c0573db && git clean -fd`
+
 ---
 
 ### How to Rollback If Stuck
