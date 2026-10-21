@@ -159,16 +159,20 @@ class WhatsAppSessionManager extends EventEmitter {
 
         if (connection === 'close') {
           const statusCode = lastDisconnect?.error?.output?.statusCode;
-          const isLoggedOut = statusCode === DisconnectReason.loggedOut;
+          const isLoggedOut = statusCode === DisconnectReason.loggedOut || statusCode === 401;
 
           session.qr = null;
           session.qrDataUrl = null;
 
           if (isLoggedOut) {
             session.status = 'REAUTH_REQUIRED';
-            session.lastError = 'Session logged out from device';
+            session.lastError = 'Session unlinked or logged out from device';
             // Clean up session folder since credentials are no longer valid
             this.clearSessionFolder(sessionDir);
+            try {
+              sock.ev.removeAllListeners();
+            } catch (e) {}
+            session.sock = null;
             this.emit('status', { tenantId, branchId, status: 'REAUTH_REQUIRED', error: session.lastError });
           } else {
             session.status = 'DISCONNECTED';

@@ -65,4 +65,23 @@ function cleanup() {
 process.on('SIGINT', cleanup);
 process.on('SIGTERM', cleanup);
 
+// Prevent unhandled Baileys socket closure rejections from terminating the server process
+process.on('uncaughtException', (err) => {
+  const msg = err?.message || '';
+  if (msg.includes('Connection Closed') || err?.isBoom || err?.output?.statusCode === 428 || err?.output?.statusCode === 401) {
+    console.warn('[WaCRM Baileys Warning] Handled socket connection close:', msg);
+    return;
+  }
+  console.error('[WaCRM Uncaught Exception]:', err);
+});
+
+process.on('unhandledRejection', (reason) => {
+  const msg = reason?.message || String(reason);
+  if (msg.includes('Connection Closed') || reason?.isBoom || reason?.output?.statusCode === 428 || reason?.output?.statusCode === 401) {
+    console.warn('[WaCRM Baileys Warning] Handled unhandled rejection on closed socket:', msg);
+    return;
+  }
+  console.error('[WaCRM Unhandled Rejection]:', reason);
+});
+
 module.exports = app;
