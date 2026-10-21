@@ -116,7 +116,7 @@ Open [http://localhost:5000](http://localhost:5000) to test:
 - **Rollback Procedure**:
   - To revert to Phase 0 baseline: `git reset --hard c0573db && git clean -fd`
 
-### Run 3 — M Square Professionals UI & Helpdesk Integration (2026-10-21)
+### Run 3 — M Square Professionals UI & Helpdesk Integration (2026-10-21) [Commit: `a6cc7e1`]
 - **Objective**: Integrate exact design system, branding, color tokens, typography, and 3-column helpdesk layout from [M Square Professionals — WhatsApp Helpdesk](https://msquarehelpdesk.netlify.app/).
 - **Status**: Completed & Verified (12/12 tests passing, Vite frontend bundle built).
 - **Added Files**:
