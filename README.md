@@ -143,7 +143,7 @@ You can log in directly at **[http://localhost:3000](http://localhost:3000)** ei
 - **Rollback Procedure**:
   - To revert to Phase 1 baseline: `git reset --hard 6ffe157 && git clean -fd`
 
-### Run 4 — Real CRM Testing, Branch Lead Permissions, In-App QR, & White Theme (2026-10-21)
+### Run 4 — Real CRM Testing, Branch Lead Permissions, In-App QR, & White Theme (2026-10-21) [Commit: `c972991`]
 - **Objective**: Fix logout visibility & Bootstrap JS bundle, enable real phone number chat initiation, restrict WhatsApp QR pairing to Branch Lead only, integrate live in-app QR scanner modal, enable live SSE message streaming, make white/light theme default, and ensure full mobile responsiveness.
 - **Status**: Completed & Verified (12/12 tests passing, Vite frontend bundle built).
 - **Modifications**:
