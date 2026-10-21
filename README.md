@@ -116,6 +116,21 @@ Open [http://localhost:5000](http://localhost:5000) to test:
 - **Rollback Procedure**:
   - To revert to Phase 0 baseline: `git reset --hard c0573db && git clean -fd`
 
+### Run 3 — M Square Professionals UI & Helpdesk Integration (2026-10-21)
+- **Objective**: Integrate exact design system, branding, color tokens, typography, and 3-column helpdesk layout from [M Square Professionals — WhatsApp Helpdesk](https://msquarehelpdesk.netlify.app/).
+- **Status**: Completed & Verified (12/12 tests passing, Vite frontend bundle built).
+- **Added Files**:
+  - `client/src/msquare-theme.css` — Complete M Square Professionals design system with `--bg-primary` (`#0c0c10`), `--brand-orange` (`#ff6b00`), `.msquare-logo-badge` (M²), `.msquare-brand-stacked`, `.msquare-navbar`, `.btn-msquare-primary`, `.btn-msquare-outline`, chat bubbles, and dual dark/light theme tokens.
+  - `client/public/favicon.svg` — M² orange badge vector favicon.
+- **Modifications**:
+  - `client/index.html`: Added Google Fonts (`Plus Jakarta Sans` & `JetBrains Mono`), dark theme initialization, and M² brand title.
+  - `client/src/main.jsx`: Imported `msquare-theme.css`.
+  - `client/src/pages/Login.jsx`: Redesigned with M² logo, dark card theme, and M Square team personas (`Aarav Sharma`, `Diya Patel`, `Vikram Mehta`, `System Super Admin`).
+  - `client/src/pages/Dashboard.jsx`: Replaced basic shell with full 3-column M Square WhatsApp Helpdesk (Conversation List Pane, Active Chat Thread with WhatsApp message dispatch & quick replies, Customer CRM Context Panel with tags & notes, and Branch/Channel operations).
+  - `server/src/db/index.js`: Seeded M Square Professionals tenant (`11111111-1111-4000-8000-000000000001`), branches (`Greater Noida Hub`, `Noida HQ`, `Jaipur Hub`), and team members.
+- **Rollback Procedure**:
+  - To revert to Phase 1 baseline: `git reset --hard 6ffe157 && git clean -fd`
+
 ---
 
 ### How to Rollback If Stuck

@@ -36,19 +36,37 @@ export default function Login() {
   };
 
   return (
-    <div className="min-vh-100 d-flex align-items-center justify-content-center bg-light py-5 px-3">
-      <div className="card shadow-sm border-0" style={{ maxWidth: '440px', width: '100%', borderRadius: '12px' }}>
+    <div className="min-vh-100 d-flex align-items-center justify-content-center py-5 px-3" style={{ backgroundColor: 'var(--bg-primary)' }}>
+      <div
+        className="card shadow-lg border-0"
+        style={{
+          maxWidth: '460px',
+          width: '100%',
+          borderRadius: '16px',
+          backgroundColor: 'var(--bg-card)',
+          border: '1px solid var(--border-strong)',
+          boxShadow: 'var(--card-shadow-hover)'
+        }}
+      >
         <div className="card-body p-4 p-sm-5">
-          {/* Logo / Header */}
+          {/* M Square Header */}
           <div className="text-center mb-4">
-            <div
-              className="d-inline-flex align-items-center justify-content-center bg-success text-white rounded-circle mb-3"
-              style={{ width: '56px', height: '56px' }}
-            >
-              <i className="bi bi-whatsapp fs-3"></i>
+            <div className="d-flex justify-content-center align-items-center gap-3 mb-3">
+              <div className="msquare-logo-badge" style={{ width: '46px', height: '46px', fontSize: '1.4rem' }}>
+                <span>M²</span>
+              </div>
+              <div className="msquare-brand-stacked text-start">
+                <span className="brand-word-top" style={{ fontSize: '1.35rem' }}>M SQUARE</span>
+                <span className="brand-word-bottom" style={{ fontSize: '0.78rem' }}>PROFESSIONALS</span>
+              </div>
             </div>
-            <h4 className="fw-bold mb-1">WaCRM Platform</h4>
-            <p className="text-muted small">Multi-Tenant WhatsApp CRM & Branch Manager</p>
+            <span className="msquare-helpdesk-badge d-inline-flex align-items-center gap-1">
+              <i className="bi bi-whatsapp fs-6 text-success"></i>
+              <span>WhatsApp Helpdesk CRM</span>
+            </span>
+            <p className="text-muted small mt-2 mb-0">
+              Multi-Tenant WhatsApp Helpdesk, Branch Isolation & Automation
+            </p>
           </div>
 
           {error && (
@@ -58,18 +76,18 @@ export default function Login() {
             </div>
           )}
 
-          {/* Login Form */}
+          {/* Form */}
           <form onSubmit={handleSubmit}>
             <div className="mb-3">
-              <label className="form-label small fw-semibold text-secondary">Email Address</label>
+              <label className="form-label small fw-semibold text-secondary">Work Email</label>
               <div className="input-group">
-                <span className="input-group-text bg-white text-muted">
+                <span className="input-group-text border-0" style={{ backgroundColor: 'var(--bg-input)', color: 'var(--text-muted)' }}>
                   <i className="bi bi-envelope"></i>
                 </span>
                 <input
                   type="email"
-                  className="form-control"
-                  placeholder="name@business.com"
+                  className="form-control message-input"
+                  placeholder="name@msquare.com"
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   required
@@ -80,12 +98,12 @@ export default function Login() {
             <div className="mb-4">
               <label className="form-label small fw-semibold text-secondary">Password</label>
               <div className="input-group">
-                <span className="input-group-text bg-white text-muted">
+                <span className="input-group-text border-0" style={{ backgroundColor: 'var(--bg-input)', color: 'var(--text-muted)' }}>
                   <i className="bi bi-lock"></i>
                 </span>
                 <input
                   type="password"
-                  className="form-control"
+                  className="form-control message-input"
                   placeholder="••••••••"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
@@ -95,7 +113,7 @@ export default function Login() {
 
             <button
               type="submit"
-              className="btn btn-success w-100 py-2 fw-semibold"
+              className="btn btn-msquare-primary w-100 py-2.5 fw-semibold"
               disabled={isSubmitting}
             >
               {isSubmitting ? (
@@ -104,54 +122,70 @@ export default function Login() {
                   Signing In...
                 </>
               ) : (
-                'Sign In to CRM'
+                <>
+                  <i className="bi bi-box-arrow-in-right me-1"></i>
+                  Sign In to Helpdesk
+                </>
               )}
             </button>
           </form>
 
-          {/* Quick Persona Selector for Testing */}
-          <div className="mt-4 pt-3 border-top">
-            <div className="small fw-bold text-muted text-uppercase mb-2" style={{ fontSize: '0.75rem', letterSpacing: '0.5px' }}>
-              Instant Evaluation Personas
+          {/* M Square Team Personas */}
+          <div className="mt-4 pt-3 border-top" style={{ borderColor: 'var(--border-subtle)' }}>
+            <div className="small fw-bold text-uppercase mb-2" style={{ fontSize: '0.74rem', letterSpacing: '0.5px', color: 'var(--brand-orange)' }}>
+              <i className="bi bi-stars me-1"></i> Switch M Square Identity
             </div>
             <div className="d-flex flex-column gap-2">
               <button
                 type="button"
-                className="btn btn-sm btn-outline-primary text-start d-flex justify-content-between align-items-center"
-                onClick={() => handleQuickLogin('admin@demo.com')}
+                className="btn btn-sm btn-msquare-outline text-start d-flex justify-content-between align-items-center"
+                onClick={() => handleQuickLogin('aarav@msquare.com')}
                 disabled={isSubmitting}
               >
-                <span>
-                  <i className="bi bi-building me-2"></i>
-                  <strong>Tenant Admin</strong> (Healthcare Demo)
-                </span>
-                <span className="badge bg-primary-subtle text-primary">Demo</span>
+                <div>
+                  <div className="fw-semibold small">Aarav Sharma (Branch Lead)</div>
+                  <div className="text-muted" style={{ fontSize: '0.72rem' }}>Greater Noida Hub • Branch Admin</div>
+                </div>
+                <span className="badge bg-warning-subtle text-warning">Branch Lead</span>
               </button>
 
               <button
                 type="button"
-                className="btn btn-sm btn-outline-secondary text-start d-flex justify-content-between align-items-center"
-                onClick={() => handleQuickLogin('agent1@demo.com')}
+                className="btn btn-sm btn-msquare-outline text-start d-flex justify-content-between align-items-center"
+                onClick={() => handleQuickLogin('diya@msquare.com')}
                 disabled={isSubmitting}
               >
-                <span>
-                  <i className="bi bi-headset me-2"></i>
-                  <strong>Support Agent</strong> (Sarah Connor)
-                </span>
-                <span className="badge bg-secondary-subtle text-secondary">Agent</span>
+                <div>
+                  <div className="fw-semibold small">Diya Patel (Helpdesk Specialist)</div>
+                  <div className="text-muted" style={{ fontSize: '0.72rem' }}>Greater Noida Support • Agent</div>
+                </div>
+                <span className="badge bg-success-subtle text-success">Agent</span>
               </button>
 
               <button
                 type="button"
-                className="btn btn-sm btn-outline-dark text-start d-flex justify-content-between align-items-center"
-                onClick={() => handleQuickLogin('root@wacrm.com')}
+                className="btn btn-sm btn-msquare-outline text-start d-flex justify-content-between align-items-center"
+                onClick={() => handleQuickLogin('vikram@msquare.com')}
                 disabled={isSubmitting}
               >
-                <span>
-                  <i className="bi bi-shield-lock me-2"></i>
-                  <strong>Root Admin</strong> (Global System)
-                </span>
-                <span className="badge bg-dark-subtle text-dark">Super</span>
+                <div>
+                  <div className="fw-semibold small">Vikram Mehta (VP Operations)</div>
+                  <div className="text-muted" style={{ fontSize: '0.72rem' }}>Corporate HQ • Tenant Admin</div>
+                </div>
+                <span className="badge bg-primary-subtle text-primary">VP Ops</span>
+              </button>
+
+              <button
+                type="button"
+                className="btn btn-sm btn-msquare-outline text-start d-flex justify-content-between align-items-center"
+                onClick={() => handleQuickLogin('superadmin@msquare.com')}
+                disabled={isSubmitting}
+              >
+                <div>
+                  <div className="fw-semibold small">System Super Admin</div>
+                  <div className="text-muted" style={{ fontSize: '0.72rem' }}>M Square Global • Super Admin</div>
+                </div>
+                <span className="badge bg-danger-subtle text-danger">Super Admin</span>
               </button>
             </div>
           </div>

@@ -48,6 +48,20 @@ class DatabaseService {
 
   resetMemoryStore() {
     this.tenants = new Map([
+      ['11111111-1111-4000-8000-000000000001', {
+        id: '11111111-1111-4000-8000-000000000001',
+        name: 'M Square Professionals',
+        slug: 'msquare-professionals',
+        status: 'active',
+        created_at: new Date().toISOString()
+      }],
+      ['22222222-2222-4000-8000-000000000002', {
+        id: '22222222-2222-4000-8000-000000000002',
+        name: 'M Square Enterprise',
+        slug: 'msquare-enterprise',
+        status: 'active',
+        created_at: new Date().toISOString()
+      }],
       ['tenant-demo', {
         id: 'tenant-demo',
         name: 'Demo Healthcare Enterprise',
@@ -65,6 +79,33 @@ class DatabaseService {
     ]);
 
     this.branches = new Map([
+      ['aaaaaaaa-0001-4000-8000-000000000001', {
+        id: 'aaaaaaaa-0001-4000-8000-000000000001',
+        tenant_id: '11111111-1111-4000-8000-000000000001',
+        name: 'Greater Noida Hub',
+        code: 'GNOIDA',
+        phone: '+919876543210',
+        status: 'active',
+        created_at: new Date().toISOString()
+      }],
+      ['aaaaaaaa-0002-4000-8000-000000000002', {
+        id: 'aaaaaaaa-0002-4000-8000-000000000002',
+        tenant_id: '11111111-1111-4000-8000-000000000001',
+        name: 'Noida HQ',
+        code: 'NOIDAHQ',
+        phone: '+919876543211',
+        status: 'active',
+        created_at: new Date().toISOString()
+      }],
+      ['bbbbbbbb-0001-4000-8000-000000000001', {
+        id: 'bbbbbbbb-0001-4000-8000-000000000001',
+        tenant_id: '22222222-2222-4000-8000-000000000002',
+        name: 'Jaipur Hub',
+        code: 'JAIPUR',
+        phone: '+919876543212',
+        status: 'active',
+        created_at: new Date().toISOString()
+      }],
       ['branch-main', {
         id: 'branch-main',
         tenant_id: 'tenant-demo',
@@ -95,6 +136,61 @@ class DatabaseService {
     ]);
 
     this.users = new Map([
+      ['alpha_branch_admin', {
+        id: 'alpha_branch_admin',
+        email: 'aarav@msquare.com',
+        full_name: 'Aarav Sharma (Branch Lead)',
+        role_id: 'BRANCH_ADMIN',
+        tenant_id: '11111111-1111-4000-8000-000000000001',
+        branch_id: 'aaaaaaaa-0001-4000-8000-000000000001',
+        badge: 'Greater Noida Hub',
+        is_active: true,
+        created_at: new Date().toISOString()
+      }],
+      ['alpha_employee', {
+        id: 'alpha_employee',
+        email: 'diya@msquare.com',
+        full_name: 'Diya Patel (Helpdesk Specialist)',
+        role_id: 'AGENT',
+        tenant_id: '11111111-1111-4000-8000-000000000001',
+        branch_id: 'aaaaaaaa-0001-4000-8000-000000000001',
+        badge: 'Greater Noida Support',
+        is_active: true,
+        created_at: new Date().toISOString()
+      }],
+      ['alpha_tenant_admin', {
+        id: 'alpha_tenant_admin',
+        email: 'vikram@msquare.com',
+        full_name: 'Vikram Mehta (VP Operations)',
+        role_id: 'TENANT_ADMIN',
+        tenant_id: '11111111-1111-4000-8000-000000000001',
+        branch_id: null,
+        badge: 'Corporate HQ',
+        is_active: true,
+        created_at: new Date().toISOString()
+      }],
+      ['super_admin', {
+        id: 'super_admin',
+        email: 'superadmin@msquare.com',
+        full_name: 'System Super Admin',
+        role_id: 'ROOT_ADMIN',
+        tenant_id: null,
+        branch_id: null,
+        badge: 'Global Admin',
+        is_active: true,
+        created_at: new Date().toISOString()
+      }],
+      ['beta_branch_admin', {
+        id: 'beta_branch_admin',
+        email: 'karan@msquare.com',
+        full_name: 'Karan Mehra (Branch Lead)',
+        role_id: 'BRANCH_ADMIN',
+        tenant_id: '22222222-2222-4000-8000-000000000002',
+        branch_id: 'bbbbbbbb-0001-4000-8000-000000000001',
+        badge: 'Jaipur Hub',
+        is_active: true,
+        created_at: new Date().toISOString()
+      }],
       ['user-root', {
         id: 'user-root',
         email: 'root@wacrm.com',
