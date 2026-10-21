@@ -13,6 +13,8 @@ export default function Dashboard() {
 
   // Role permissions check: Only Branch Lead or Root Admin can manage WhatsApp socket/QR
   const isBranchLead = user?.role_id === 'BRANCH_ADMIN' || user?.role_id === 'ROOT_ADMIN';
+  const activeTenantId = user?.tenant_id || '11111111-1111-4000-8000-000000000001';
+  const activeBranchId = user?.branch_id || 'aaaaaaaa-0001-4000-8000-000000000001';
 
   // Live WhatsApp Socket State
   const [waStatus, setWaStatus] = useState('DISCONNECTED'); // DISCONNECTED, SCAN_QR, CONNECTED, CONNECTING
@@ -134,10 +136,6 @@ export default function Dashboard() {
     document.documentElement.setAttribute('data-bs-theme', theme);
     document.documentElement.setAttribute('data-theme', theme);
   }, [theme]);
-
-  // Active tenant and branch IDs
-  const activeTenantId = user?.tenant_id || '11111111-1111-4000-8000-000000000001';
-  const activeBranchId = user?.branch_id || 'aaaaaaaa-0001-4000-8000-000000000001';
 
   // Fetch WhatsApp session status
   const checkWhatsAppStatus = async () => {
