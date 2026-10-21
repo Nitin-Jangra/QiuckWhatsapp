@@ -289,8 +289,30 @@ export default function Dashboard() {
           };
 
           if (existing) {
-            // Check for deduplication
-            const alreadyHasMsg = existing.messages.some(m => m.id === newMsgObj.id);
+            // Deduplication: reconcile optimistic messages with real Baileys echo to prevent double bubbles
+            const isDuplicate = existing.messages.some(m =>
+              m.id === newMsgObj.id ||
+              (m.fromMe && newMsgObj.fromMe && m.text === newMsgObj.text)
+            );
+
+            if (isDuplicate) {
+              return prev.map(c => {
+                if (c.id === existing.id) {
+                  return {
+                    ...c,
+                    remoteJid: c.remoteJid || msg.remoteJid,
+                    customerName: (msg.pushName && c.customerName.startsWith('Customer (')) ? `${msg.pushName} (${displayPhone})` : c.customerName,
+                    messages: c.messages.map(m =>
+                      (m.id === newMsgObj.id || (m.fromMe && newMsgObj.fromMe && m.text === newMsgObj.text))
+                        ? { ...m, id: newMsgObj.id, status: 'delivered' }
+                        : m
+                    )
+                  };
+                }
+                return c;
+              });
+            }
+
             return prev.map(c => {
               if (c.id === existing.id) {
                 return {
@@ -300,7 +322,7 @@ export default function Dashboard() {
                   lastMessage: incomingText,
                   lastMessageTime: 'Just now',
                   unreadCount: (!msg.fromMe && c.id !== selectedConvId) ? c.unreadCount + 1 : c.unreadCount,
-                  messages: alreadyHasMsg ? c.messages : [...c.messages, newMsgObj]
+                  messages: [...c.messages, newMsgObj]
                 };
               }
               return c;
@@ -427,12 +449,13 @@ export default function Dashboard() {
           return c;
         }));
       } else {
-        // Mark as delivered
+        // Mark as delivered and reconcile real WhatsApp messageId
+        const realId = data.data?.messageId || newMsgId;
         setConversations(prev => prev.map(c => {
           if (c.id === selectedConv.id) {
             return {
               ...c,
-              messages: c.messages.map(m => m.id === newMsgId ? { ...m, status: 'delivered' } : m)
+              messages: c.messages.map(m => m.id === newMsgId ? { ...m, id: realId, status: 'delivered' } : m)
             };
           }
           return c;
@@ -620,16 +643,21 @@ export default function Dashboard() {
                   <i className="bi bi-check-circle-fill"></i>
                   <span className="d-none d-sm-inline">WhatsApp: {waPhone ? `+${waPhone}` : 'Connected'}</span>
                 </span>
-              ) : (
+              ) : isBranchLead ? (
                 <button
                   type="button"
-                  className={`btn btn-sm ${isBranchLead ? 'btn-msquare-primary' : 'btn-outline-secondary'} py-1 px-2 d-flex align-items-center gap-1`}
+                  className="btn btn-sm btn-msquare-primary py-1 px-2 d-flex align-items-center gap-1"
                   onClick={handleConnectWhatsApp}
-                  title={isBranchLead ? 'Connect or Pair WhatsApp' : 'Only Branch Lead can pair WhatsApp'}
+                  title="Connect or Pair WhatsApp (Branch Lead only)"
                 >
                   <i className="bi bi-qr-code"></i>
                   <span className="d-none d-sm-inline">{waStatus === 'SCAN_QR' ? 'Scan QR' : 'WhatsApp Connect'}</span>
                 </button>
+              ) : (
+                <span className="badge bg-secondary-subtle text-muted py-1.5 px-2.5 small d-flex align-items-center gap-1">
+                  <i className="bi bi-circle-fill text-secondary" style={{ fontSize: '0.45rem' }}></i>
+                  <span className="d-none d-sm-inline">WhatsApp Offline</span>
+                </span>
               )}
             </div>
 
@@ -743,28 +771,28 @@ export default function Dashboard() {
             </span>
           </div>
 
-          <div className="px-3 mt-4 mb-2 small text-uppercase fw-bold text-muted" style={{ fontSize: '0.72rem', letterSpacing: '0.5px' }}>
-            Operations & WhatsApp
-          </div>
-          <div
-            className={`sidebar-nav-link ${activeView === 'channels' ? 'active' : ''}`}
-            onClick={() => { setActiveView('channels'); setSidebarMobileOpen(false); }}
-          >
-            <i className="bi bi-qr-code text-success"></i>
-            <span>WhatsApp Channel</span>
-            {isBranchLead ? (
-              <span className="badge bg-success-subtle text-success ms-auto" style={{ fontSize: '0.68rem' }}>Lead Admin</span>
-            ) : (
-              <span className="badge bg-secondary-subtle text-muted ms-auto" style={{ fontSize: '0.68rem' }}><i className="bi bi-lock-fill"></i></span>
-            )}
-          </div>
-          <div
-            className={`sidebar-nav-link ${activeView === 'branches' ? 'active' : ''}`}
-            onClick={() => { setActiveView('branches'); setSidebarMobileOpen(false); }}
-          >
-            <i className="bi bi-diagram-3-fill text-primary"></i>
-            <span>Branches & Roster</span>
-          </div>
+          {isBranchLead && (
+            <>
+              <div className="px-3 mt-4 mb-2 small text-uppercase fw-bold text-muted" style={{ fontSize: '0.72rem', letterSpacing: '0.5px' }}>
+                Operations & WhatsApp
+              </div>
+              <div
+                className={`sidebar-nav-link ${activeView === 'channels' ? 'active' : ''}`}
+                onClick={() => { setActiveView('channels'); setSidebarMobileOpen(false); }}
+              >
+                <i className="bi bi-qr-code text-success"></i>
+                <span>WhatsApp Channel</span>
+                <span className="badge bg-success-subtle text-success ms-auto" style={{ fontSize: '0.68rem' }}>Lead Admin</span>
+              </div>
+              <div
+                className={`sidebar-nav-link ${activeView === 'branches' ? 'active' : ''}`}
+                onClick={() => { setActiveView('branches'); setSidebarMobileOpen(false); }}
+              >
+                <i className="bi bi-diagram-3-fill text-primary"></i>
+                <span>Branches & Roster</span>
+              </div>
+            </>
+          )}
 
           {/* Quick Real Chat Button */}
           <div className="px-3 mt-4">
@@ -959,39 +987,46 @@ export default function Dashboard() {
 
                     {/* Agent Assignment & Status Controls */}
                     <div className="d-flex align-items-center gap-2">
-                      {/* Assign to Agent Dropdown */}
-                      <div className="dropdown d-none d-sm-block">
-                        <button
-                          className="btn btn-sm btn-outline-secondary dropdown-toggle d-flex align-items-center gap-1 py-1 px-2"
-                          type="button"
-                          data-bs-toggle="dropdown"
-                          aria-expanded="false"
-                          style={{ fontSize: '0.78rem' }}
-                          title="Assign conversation to an agent"
-                        >
-                          <i className="bi bi-person-badge text-primary"></i>
-                          <span className="text-truncate" style={{ maxWidth: '140px' }}>
-                            {selectedConv.assignedTo || 'Assign Agent'}
-                          </span>
-                        </button>
-                        <ul className="dropdown-menu dropdown-menu-end shadow-sm" style={{ fontSize: '0.82rem' }}>
-                          <li className="dropdown-header small text-muted">Assign Branch Agent</li>
-                          {(usersList.length > 0 ? usersList : [
-                            { id: 'alpha_employee', full_name: 'Diya Patel (Helpdesk Specialist)', role_id: 'AGENT' },
-                            { id: 'alpha_branch_admin', full_name: 'Aarav Sharma (Branch Lead)', role_id: 'BRANCH_ADMIN' }
-                          ]).map(agent => (
-                            <li key={agent.id}>
-                              <button
-                                className={`dropdown-item d-flex align-items-center justify-content-between ${selectedConv.assignedUserId === agent.id ? 'active' : ''}`}
-                                onClick={() => handleAssignAgent(selectedConv.id, agent)}
-                              >
-                                <span>{agent.full_name}</span>
-                                <span className="badge bg-secondary-subtle text-secondary small ms-2">{agent.role_id}</span>
-                              </button>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
+                      {/* Assign to Agent Dropdown (Branch Lead only) */}
+                      {isBranchLead ? (
+                        <div className="dropdown d-none d-sm-block">
+                          <button
+                            className="btn btn-sm btn-outline-secondary dropdown-toggle d-flex align-items-center gap-1 py-1 px-2"
+                            type="button"
+                            data-bs-toggle="dropdown"
+                            aria-expanded="false"
+                            style={{ fontSize: '0.78rem' }}
+                            title="Assign conversation to an agent"
+                          >
+                            <i className="bi bi-person-badge text-primary"></i>
+                            <span className="text-truncate" style={{ maxWidth: '140px' }}>
+                              {selectedConv.assignedTo || 'Assign Agent'}
+                            </span>
+                          </button>
+                          <ul className="dropdown-menu dropdown-menu-end shadow-sm" style={{ fontSize: '0.82rem' }}>
+                            <li className="dropdown-header small text-muted">Assign Branch Agent</li>
+                            {(usersList.length > 0 ? usersList : [
+                              { id: 'alpha_employee', full_name: 'Diya Patel (Helpdesk Specialist)', role_id: 'AGENT' },
+                              { id: 'alpha_branch_admin', full_name: 'Aarav Sharma (Branch Lead)', role_id: 'BRANCH_ADMIN' }
+                            ]).map(agent => (
+                              <li key={agent.id}>
+                                <button
+                                  className={`dropdown-item d-flex align-items-center justify-content-between ${selectedConv.assignedUserId === agent.id ? 'active' : ''}`}
+                                  onClick={() => handleAssignAgent(selectedConv.id, agent)}
+                                >
+                                  <span>{agent.full_name}</span>
+                                  <span className="badge bg-secondary-subtle text-secondary small ms-2">{agent.role_id}</span>
+                                </button>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      ) : (
+                        <div className="d-none d-sm-flex align-items-center gap-1 py-1 px-2 rounded border bg-body-tertiary small text-muted" style={{ fontSize: '0.75rem' }}>
+                          <i className="bi bi-person-fill text-primary"></i>
+                          <span className="text-truncate" style={{ maxWidth: '130px' }}>{selectedConv.assignedTo}</span>
+                        </div>
+                      )}
 
                       <select
                         className="form-select form-select-sm message-input d-none d-sm-block"

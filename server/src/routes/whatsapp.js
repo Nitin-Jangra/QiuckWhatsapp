@@ -115,7 +115,6 @@ router.post('/send', async (req, res) => {
       timestamp: result.timestamp
     };
     messageStore.unshift(sentMsg);
-    sendSseEvent(connector.getBranchKey(tenantId, branchId), 'message', sentMsg);
 
     res.json({ success: true, data: result });
   } catch (err) {

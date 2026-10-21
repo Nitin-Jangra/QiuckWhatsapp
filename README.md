@@ -198,6 +198,24 @@ You can log in directly at **[http://localhost:3000](http://localhost:3000)** ei
 
 ---
 
+#### Run 7 - Fix Message Duplication & Strict RBAC Feature Button Visibility
+- **Timestamp**: 2026-10-21
+- **Root Cause & Fix for Double Messages**:
+  - Outbound replies previously rendered twice: first by the client's optimistic update (`id: 'm-...'`), and second when the backend `/send` endpoint artificially broadcast an SSE `message` event with the real WhatsApp ID (`id: '3EB...'`).
+  - Removed the redundant SSE broadcast from `/api/whatsapp/send` in `routes/whatsapp.js`.
+  - In `Dashboard.jsx`, reconciled optimistic bubbles with the real WhatsApp `messageId` on API response and added smart deduplication in the SSE listener (matching identical outgoing text within the conversation).
+- **Strict Role-Based Feature Visibility**:
+  - **Navbar**: If the user is not a Branch Lead (`!isBranchLead`), the `WhatsApp Connect` / `Scan QR` button is completely hidden and replaced with a read-only `WhatsApp Offline` status indicator.
+  - **Sidebar**: The entire `Operations & WhatsApp` section (`WhatsApp Channel` and `Branches & Roster`) is strictly hidden for regular Support Agents (`Diya Patel`).
+  - **Chat Header**: The interactive "Assign Agent" dropdown is restricted to Branch Leads (`isBranchLead`); regular agents see a clean, read-only assigned badge without reassignment controls.
+- **Modified Files**:
+  - `server/src/routes/whatsapp.js`: Removed redundant SSE broadcast on outbound `/send`.
+  - `client/src/pages/Dashboard.jsx`: Reconciled optimistic message ID, added deduplication guard in SSE listener, and strictly hid unauthorized buttons for non-lead roles.
+- **Rollback Procedure**:
+  - To revert to Run 6 baseline: `git reset --hard 0b992dd && git clean -fd`
+
+---
+
 ### How to Rollback If Stuck
 
 1. **Check Current Status**:
