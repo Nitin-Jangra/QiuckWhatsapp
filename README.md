@@ -216,6 +216,36 @@ You can log in directly at **[http://localhost:3000](http://localhost:3000)** ei
 
 ---
 
+#### Run 8 - Multi-Agent Chat Testing, Strict Queue Isolation & Role-Based Transfer Rules
+- **Timestamp**: 2026-10-21
+- **User Goals**:
+  1. Add at least 2–3 active agents to test inbound chat assignment distribution and role isolation.
+  2. Implement strict agent isolation: agents must NOT see chats assigned to other employees.
+  3. Allow the Branch Lead to view all chats, filter chats by specific agent, and transfer/reassign chats to any employee in the SAME branch.
+  4. Allow regular employees (agents) to ONLY transfer chats to another branch (they cannot reassign within the same branch).
+- **Implementation**:
+  - **3 Active Support Agents Seeded in `Greater Noida Hub`**:
+    - `Diya Patel (Helpdesk Specialist)`: `diya@msquare.com` (Role: `AGENT`, ID: `alpha_employee`)
+    - `Rohan Mehta (Support Specialist)`: `rohan@msquare.com` (Role: `AGENT`, ID: `alpha_agent_rohan`)
+    - `Kavita Sen (Customer Success)`: `kavita@msquare.com` (Role: `AGENT`, ID: `alpha_agent_kavita`)
+    - `Aarav Sharma (Branch Lead)`: `aarav@msquare.com` (Role: `BRANCH_ADMIN`, ID: `alpha_branch_admin`)
+  - **Workload-Balanced Auto-Assignment**:
+    - Inbound WhatsApp messages auto-balance across active branch agents (`Diya`, `Rohan`, `Kavita`) by picking the agent with the lowest open assigned chat workload.
+  - **Strict Agent Queue Isolation**:
+    - In `Dashboard.jsx`, non-lead employees (`!isBranchLead`) only view conversations where `assignedUserId === user.id || assignedTo === user.full_name`. They cannot see or click other agents' customer threads.
+    - Selected chat derivation (`selectedConv`) strictly selects from `filteredConversations`, preventing leaks if switching accounts.
+  - **Branch Lead Filter & Same-Branch Reassign**:
+    - Branch Lead has an interactive **"Filter by Agent"** dropdown directly in the conversation pane to inspect individual agents' queues or view all.
+    - Branch Lead has a **"Reassign Agent (Same Branch)"** dropdown in the chat header to transfer any conversation to another employee in the branch.
+  - **Agent Branch Transfer**:
+    - Regular agents are prohibited from reassigning within the same branch, but have a **"Transfer Branch"** dropdown to transfer conversations to other branch queues (`Noida HQ`, `Gurugram Central`). Once transferred, the conversation moves out of their active queue.
+  - **Testing UI**:
+    - Added one-click quick login buttons on the Login page and a 1-click Role Switcher in the sidebar for Aarav, Diya, Rohan, and Kavita.
+- **Rollback Procedure**:
+  - To revert to Run 7 baseline: `git reset --hard bbc41e0 && git clean -fd`
+
+---
+
 ### How to Rollback If Stuck
 
 1. **Check Current Status**:

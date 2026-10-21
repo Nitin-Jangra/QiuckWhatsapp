@@ -153,7 +153,7 @@ export default function Login() {
             </button>
 
             <div className="small fw-bold text-uppercase text-muted mb-2" style={{ fontSize: '0.72rem' }}>
-              Alternative Team Members:
+              Branch Support Agents (Isolated Chat Queues):
             </div>
             <div className="d-flex flex-column gap-1.5">
               <button
@@ -163,8 +163,34 @@ export default function Login() {
                 disabled={isSubmitting}
               >
                 <div>
-                  <div className="fw-semibold small">Diya Patel (Helpdesk Specialist)</div>
-                  <div className="text-muted" style={{ fontSize: '0.7rem' }}>Support Agent • Cannot refresh QR</div>
+                  <div className="fw-semibold small">Diya Patel (Agent 1)</div>
+                  <div className="text-muted" style={{ fontSize: '0.7rem' }}>Helpdesk Specialist • Isolated Inbound Queue</div>
+                </div>
+                <span className="badge bg-secondary-subtle text-muted">Agent</span>
+              </button>
+
+              <button
+                type="button"
+                className="btn btn-sm btn-msquare-outline text-start d-flex justify-content-between align-items-center py-1.5"
+                onClick={() => handleQuickLogin('rohan@msquare.com')}
+                disabled={isSubmitting}
+              >
+                <div>
+                  <div className="fw-semibold small">Rohan Mehta (Agent 2)</div>
+                  <div className="text-muted" style={{ fontSize: '0.7rem' }}>Support Specialist • Isolated Inbound Queue</div>
+                </div>
+                <span className="badge bg-secondary-subtle text-muted">Agent</span>
+              </button>
+
+              <button
+                type="button"
+                className="btn btn-sm btn-msquare-outline text-start d-flex justify-content-between align-items-center py-1.5"
+                onClick={() => handleQuickLogin('kavita@msquare.com')}
+                disabled={isSubmitting}
+              >
+                <div>
+                  <div className="fw-semibold small">Kavita Sen (Agent 3)</div>
+                  <div className="text-muted" style={{ fontSize: '0.7rem' }}>Customer Success • Isolated Inbound Queue</div>
                 </div>
                 <span className="badge bg-secondary-subtle text-muted">Agent</span>
               </button>

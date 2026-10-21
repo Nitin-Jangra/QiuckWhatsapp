@@ -47,10 +47,12 @@ export default function Dashboard() {
   const [conversations, setConversations] = useState([]);
   const [selectedConvId, setSelectedConvId] = useState(null);
   const [chatFilter, setChatFilter] = useState('all'); // 'all', 'mine', 'unread', 'resolved'
+  const [agentFilter, setAgentFilter] = useState('all'); // 'all' or agent user id (for Branch Lead)
   const [searchQuery, setSearchQuery] = useState('');
   const [replyText, setReplyText] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [sendError, setSendError] = useState('');
+  const [transferNotice, setTransferNotice] = useState('');
 
   // New Real Chat Modal State
   const [showNewChatModal, setShowNewChatModal] = useState(false);
@@ -60,8 +62,58 @@ export default function Dashboard() {
 
   const messagesEndRef = useRef(null);
 
-  // Selected conversation
-  const selectedConv = conversations.find(c => c.id === selectedConvId) || conversations[0] || null;
+  // Workload balancer: auto-assign incoming chats to the agent with the lowest open workload
+  const getLeastLoadedAgent = (currentConvs) => {
+    const branchAgents = usersList.filter(u => u.branch_id === activeBranchId && u.role_id === 'AGENT');
+    if (branchAgents.length === 0) {
+      return { id: 'alpha_employee', full_name: 'Diya Patel (Helpdesk Specialist)', role_id: 'AGENT' };
+    }
+    const counts = {};
+    branchAgents.forEach(a => { counts[a.id] = 0; });
+    (currentConvs || []).forEach(c => {
+      if (c.status !== 'resolved' && counts[c.assignedUserId] !== undefined) {
+        counts[c.assignedUserId]++;
+      }
+    });
+    const sorted = [...branchAgents].sort((a, b) => (counts[a.id] || 0) - (counts[b.id] || 0));
+    return sorted[0];
+  };
+
+  // Filter conversations with strict agent isolation
+  const filteredConversations = conversations.filter(c => {
+    // 1. Strict Agent Isolation: Non-lead employees can ONLY see chats assigned to them in their branch
+    if (!isBranchLead && user) {
+      const isAssigned = c.assignedUserId === user.id || c.assignedTo === user.full_name;
+      const isCurrentBranch = !c.branchId || c.branchId === activeBranchId;
+      if (!isAssigned || !isCurrentBranch) return false;
+    }
+
+    // 2. Branch Lead: Filter by Agent
+    if (isBranchLead && agentFilter !== 'all') {
+      if (c.assignedUserId !== agentFilter && c.assignedTo !== agentFilter) return false;
+    }
+
+    // 3. Status/View filters
+    if (chatFilter === 'mine' && user) {
+      if (c.assignedUserId !== user.id && c.assignedTo !== user.full_name) return false;
+    }
+    if (chatFilter === 'unread' && c.unreadCount === 0) return false;
+    if (chatFilter === 'resolved' && c.status !== 'resolved') return false;
+
+    // 4. Search query
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      return (
+        c.customerName.toLowerCase().includes(q) ||
+        c.customerPhone.includes(q) ||
+        c.lastMessage.toLowerCase().includes(q)
+      );
+    }
+    return true;
+  });
+
+  // Selected conversation must strictly come from filtered list to preserve agent privacy
+  const selectedConv = filteredConversations.find(c => c.id === selectedConvId) || filteredConversations[0] || null;
 
   // Auto-scroll messages to bottom
   useEffect(() => {
@@ -182,6 +234,10 @@ export default function Dashboard() {
             const dPhone = formatDisplayPhone(digits);
             if (!map.has(digits)) {
               const displayName = msg.pushName ? `${msg.pushName} (${dPhone})` : `Customer (${dPhone})`;
+              const branchAgents = (uRes.data || []).filter(u => u.branch_id === activeBranchId && u.role_id === 'AGENT');
+              const assignedAgent = branchAgents.length > 0
+                ? branchAgents[map.size % branchAgents.length]
+                : { id: 'alpha_employee', full_name: 'Diya Patel (Helpdesk Specialist)' };
               map.set(digits, {
                 id: 'conv-' + digits,
                 customerName: displayName,
@@ -190,8 +246,8 @@ export default function Dashboard() {
                 branchName: 'Greater Noida Hub',
                 branchId: activeBranchId,
                 status: 'open',
-                assignedTo: 'Diya Patel (Helpdesk Specialist)',
-                assignedUserId: 'alpha_employee',
+                assignedTo: assignedAgent.full_name,
+                assignedUserId: assignedAgent.id,
                 unreadCount: 0,
                 lastMessage: msg.text || '',
                 lastMessageTime: new Date(msg.timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -200,7 +256,7 @@ export default function Dashboard() {
                   stage: 'WhatsApp Inbound',
                   tags: ['Live WhatsApp'],
                   budget: 'TBD',
-                  internalNote: 'Live WhatsApp conversation automatically assigned to Helpdesk Specialist.'
+                  internalNote: `Live WhatsApp conversation assigned to ${assignedAgent.full_name}.`
                 }
               });
             }
@@ -328,7 +384,8 @@ export default function Dashboard() {
               return c;
             });
           } else {
-            // New incoming customer conversation: auto-assign to branch agent!
+            // New incoming customer conversation: auto-assign via workload balancer across branch agents!
+            const assignedAgent = getLeastLoadedAgent(prev);
             const displayName = msg.pushName ? `${msg.pushName} (${displayPhone})` : `Customer (${displayPhone})`;
             const newConv = {
               id: 'conv-' + incomingDigits,
@@ -338,8 +395,8 @@ export default function Dashboard() {
               branchName: 'Greater Noida Hub',
               branchId: activeBranchId,
               status: 'open',
-              assignedTo: branchAgent.full_name,
-              assignedUserId: branchAgent.id,
+              assignedTo: assignedAgent.full_name,
+              assignedUserId: assignedAgent.id,
               unreadCount: msg.fromMe ? 0 : 1,
               lastMessage: incomingText,
               lastMessageTime: 'Just now',
@@ -348,7 +405,7 @@ export default function Dashboard() {
                 stage: 'New Inquiry',
                 tags: ['Live WhatsApp', 'Inbound'],
                 budget: 'TBD',
-                internalNote: `Incoming customer inquiry auto-assigned to ${branchAgent.full_name}.`
+                internalNote: `Incoming customer inquiry auto-assigned to ${assignedAgent.full_name}.`
               }
             };
 
@@ -365,8 +422,12 @@ export default function Dashboard() {
     return () => es.close();
   }, [activeTenantId, activeBranchId, selectedConvId, usersList]);
 
-  // Assign or transfer conversation to an agent
+  // Lead only: Reassign conversation to another employee in the SAME branch
   const handleAssignAgent = (convId, agent) => {
+    if (!isBranchLead) {
+      alert('Access Restricted: Only Branch Lead can reassign chats within this branch.');
+      return;
+    }
     setConversations(prev => prev.map(c => {
       if (c.id === convId) {
         return {
@@ -375,12 +436,41 @@ export default function Dashboard() {
           assignedUserId: agent.id,
           leadInfo: {
             ...c.leadInfo,
-            internalNote: `${c.leadInfo?.internalNote || ''}\n[Assigned to ${agent.full_name} at ${new Date().toLocaleTimeString()}]`.trim()
+            internalNote: `${c.leadInfo?.internalNote || ''}\n[Reassigned to ${agent.full_name} by Branch Lead at ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}]`.trim()
           }
         };
       }
       return c;
     }));
+    setTransferNotice(`Chat reassigned to ${agent.full_name}`);
+    setTimeout(() => setTransferNotice(''), 3500);
+  };
+
+  // Transfer conversation to ANOTHER branch (Allowed for both Lead and Regular Agent)
+  const handleTransferBranch = (convId, targetBranch) => {
+    if (targetBranch.id === activeBranchId) {
+      alert('Please select a different branch to transfer.');
+      return;
+    }
+    setConversations(prev => prev.map(c => {
+      if (c.id === convId) {
+        return {
+          ...c,
+          branchId: targetBranch.id,
+          branchName: targetBranch.name,
+          assignedTo: `Transferred (${targetBranch.name} Queue)`,
+          assignedUserId: null,
+          leadInfo: {
+            ...c.leadInfo,
+            stage: 'Transferred Branch',
+            internalNote: `${c.leadInfo?.internalNote || ''}\n[Transferred to ${targetBranch.name} by ${user?.full_name || 'Agent'} at ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}]`.trim()
+          }
+        };
+      }
+      return c;
+    }));
+    setTransferNotice(`Chat successfully transferred to ${targetBranch.name}`);
+    setTimeout(() => setTransferNotice(''), 4000);
   };
 
   // Send WhatsApp message back to customer
@@ -501,9 +591,9 @@ export default function Dashboard() {
       return;
     }
 
-    const branchAgent = usersList.find(u => u.branch_id === activeBranchId && u.role_id === 'AGENT')
-      || usersList.find(u => u.role_id === 'AGENT')
-      || { full_name: 'Diya Patel (Helpdesk Specialist)', id: 'alpha_employee' };
+    const assignedAgent = (!isBranchLead && user)
+      ? { full_name: user.full_name, id: user.id }
+      : getLeastLoadedAgent(conversations);
 
     const newConvId = 'conv-' + digits;
     const newConv = {
@@ -513,8 +603,8 @@ export default function Dashboard() {
       branchName: 'Greater Noida Hub',
       branchId: activeBranchId,
       status: 'open',
-      assignedTo: branchAgent.full_name,
-      assignedUserId: branchAgent.id,
+      assignedTo: assignedAgent.full_name,
+      assignedUserId: assignedAgent.id,
       unreadCount: 0,
       lastMessage: newChatInitialMsg || 'Conversation initiated',
       lastMessageTime: 'Just now',
@@ -531,7 +621,7 @@ export default function Dashboard() {
         stage: 'Direct Outbound',
         tags: ['New Lead', 'WhatsApp CRM'],
         budget: 'TBD',
-        internalNote: `Real chat initiated by ${user?.full_name || 'Team'}. Assigned to ${branchAgent.full_name}.`
+        internalNote: `Real chat initiated by ${user?.full_name || 'Team'}. Assigned to ${assignedAgent.full_name}.`
       }
     };
 
@@ -571,25 +661,6 @@ export default function Dashboard() {
       return c;
     }));
   };
-
-  // Filter conversations
-  const filteredConversations = conversations.filter(c => {
-    if (chatFilter === 'mine' && user) {
-      if (c.assignedUserId !== user.id && c.assignedTo !== user.full_name) return false;
-    }
-    if (chatFilter === 'unread' && c.unreadCount === 0) return false;
-    if (chatFilter === 'resolved' && c.status !== 'resolved') return false;
-
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      return (
-        c.customerName.toLowerCase().includes(q) ||
-        c.customerPhone.includes(q) ||
-        c.lastMessage.toLowerCase().includes(q)
-      );
-    }
-    return true;
-  });
 
   const getStatusBadge = (status) => {
     switch (status) {
@@ -807,12 +878,13 @@ export default function Dashboard() {
 
           {/* Switch Identity for testing */}
           <div className="mt-auto px-3 pt-3 border-top" style={{ borderColor: 'var(--border-subtle)' }}>
-            <div className="small text-muted mb-1 fw-bold" style={{ fontSize: '0.72rem' }}>Role Switcher</div>
+            <div className="small text-muted mb-1 fw-bold" style={{ fontSize: '0.72rem' }}>Role Switcher (Testing)</div>
             <div className="d-flex flex-column gap-1">
               <button
                 className={`btn btn-xs text-start py-1 px-2 rounded small ${user?.email === 'aarav@msquare.com' ? 'btn-warning' : 'btn-outline-secondary'}`}
                 style={{ fontSize: '0.74rem' }}
                 onClick={() => login('aarav@msquare.com')}
+                title="Branch Lead: Can see all chats, filter by agent, reassign to same branch, manage WhatsApp"
               >
                 <i className="bi bi-shield-check me-1"></i> Aarav (Branch Lead)
               </button>
@@ -820,8 +892,25 @@ export default function Dashboard() {
                 className={`btn btn-xs text-start py-1 px-2 rounded small ${user?.email === 'diya@msquare.com' ? 'btn-success' : 'btn-outline-secondary'}`}
                 style={{ fontSize: '0.74rem' }}
                 onClick={() => login('diya@msquare.com')}
+                title="Agent 1: Can only see own assigned chats, can only transfer to another branch"
               >
-                <i className="bi bi-person me-1"></i> Diya (Support Agent)
+                <i className="bi bi-person me-1"></i> Diya (Agent 1)
+              </button>
+              <button
+                className={`btn btn-xs text-start py-1 px-2 rounded small ${user?.email === 'rohan@msquare.com' ? 'btn-success' : 'btn-outline-secondary'}`}
+                style={{ fontSize: '0.74rem' }}
+                onClick={() => login('rohan@msquare.com')}
+                title="Agent 2: Can only see own assigned chats, can only transfer to another branch"
+              >
+                <i className="bi bi-person me-1"></i> Rohan (Agent 2)
+              </button>
+              <button
+                className={`btn btn-xs text-start py-1 px-2 rounded small ${user?.email === 'kavita@msquare.com' ? 'btn-success' : 'btn-outline-secondary'}`}
+                style={{ fontSize: '0.74rem' }}
+                onClick={() => login('kavita@msquare.com')}
+                title="Agent 3: Can only see own assigned chats, can only transfer to another branch"
+              >
+                <i className="bi bi-person me-1"></i> Kavita (Agent 3)
               </button>
             </div>
           </div>
@@ -857,7 +946,7 @@ export default function Dashboard() {
                 </div>
 
                 {/* Filter Pills */}
-                <div className="d-flex gap-1 overflow-x-auto pb-1">
+                <div className="d-flex gap-1 overflow-x-auto pb-1 mb-2">
                   <button
                     className={`btn btn-sm ${chatFilter === 'all' ? 'btn-msquare-primary py-0 px-2' : 'btn-msquare-outline py-0 px-2'}`}
                     onClick={() => setChatFilter('all')}
@@ -883,6 +972,55 @@ export default function Dashboard() {
                     Resolved
                   </button>
                 </div>
+
+                {/* Branch Lead: Filter by Agent */}
+                {isBranchLead ? (
+                  <div className="pt-2 border-top" style={{ borderColor: 'var(--border-subtle)' }}>
+                    <div className="d-flex align-items-center justify-content-between mb-1">
+                      <span className="small text-muted fw-bold" style={{ fontSize: '0.72rem' }}>
+                        <i className="bi bi-funnel-fill text-warning me-1"></i> Filter by Agent (Lead):
+                      </span>
+                      {agentFilter !== 'all' && (
+                        <button
+                          className="btn btn-link btn-xs p-0 text-muted"
+                          style={{ fontSize: '0.7rem' }}
+                          onClick={() => setAgentFilter('all')}
+                        >
+                          Show All
+                        </button>
+                      )}
+                    </div>
+                    <select
+                      className="form-select form-select-sm message-input"
+                      style={{ fontSize: '0.78rem' }}
+                      value={agentFilter}
+                      onChange={(e) => setAgentFilter(e.target.value)}
+                    >
+                      <option value="all">👥 All Agents ({conversations.length} total)</option>
+                      {(usersList.length > 0 ? usersList.filter(u => u.branch_id === activeBranchId && u.role_id === 'AGENT') : [
+                        { id: 'alpha_employee', full_name: 'Diya Patel (Helpdesk Specialist)' },
+                        { id: 'alpha_agent_rohan', full_name: 'Rohan Mehta (Support Specialist)' },
+                        { id: 'alpha_agent_kavita', full_name: 'Kavita Sen (Customer Success)' }
+                      ]).map(agent => {
+                        const count = conversations.filter(c => c.assignedUserId === agent.id).length;
+                        return (
+                          <option key={agent.id} value={agent.id}>
+                            👤 {agent.full_name} ({count})
+                          </option>
+                        );
+                      })}
+                    </select>
+                  </div>
+                ) : (
+                  <div className="pt-2 border-top" style={{ borderColor: 'var(--border-subtle)' }}>
+                    <div className="py-1 px-2 rounded bg-body-tertiary border d-flex align-items-center justify-content-between">
+                      <span className="small text-muted" style={{ fontSize: '0.72rem' }}>
+                        <i className="bi bi-shield-lock-fill text-success me-1"></i> Isolated Inbox (Mine Only)
+                      </span>
+                      <span className="badge bg-success-subtle text-success small">{filteredConversations.length}</span>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Conversations List */}
@@ -985,9 +1123,9 @@ export default function Dashboard() {
                       </div>
                     </div>
 
-                    {/* Agent Assignment & Status Controls */}
+                    {/* Agent Assignment & Transfer Controls */}
                     <div className="d-flex align-items-center gap-2">
-                      {/* Assign to Agent Dropdown (Branch Lead only) */}
+                      {/* Branch Lead: Can reassign conversation to another employee in the SAME branch */}
                       {isBranchLead ? (
                         <div className="dropdown d-none d-sm-block">
                           <button
@@ -996,18 +1134,19 @@ export default function Dashboard() {
                             data-bs-toggle="dropdown"
                             aria-expanded="false"
                             style={{ fontSize: '0.78rem' }}
-                            title="Assign conversation to an agent"
+                            title="Reassign to another agent in this branch"
                           >
-                            <i className="bi bi-person-badge text-primary"></i>
+                            <i className="bi bi-person-gear text-primary"></i>
                             <span className="text-truncate" style={{ maxWidth: '140px' }}>
                               {selectedConv.assignedTo || 'Assign Agent'}
                             </span>
                           </button>
                           <ul className="dropdown-menu dropdown-menu-end shadow-sm" style={{ fontSize: '0.82rem' }}>
-                            <li className="dropdown-header small text-muted">Assign Branch Agent</li>
-                            {(usersList.length > 0 ? usersList : [
-                              { id: 'alpha_employee', full_name: 'Diya Patel (Helpdesk Specialist)', role_id: 'AGENT' },
-                              { id: 'alpha_branch_admin', full_name: 'Aarav Sharma (Branch Lead)', role_id: 'BRANCH_ADMIN' }
+                            <li className="dropdown-header small text-muted">Reassign to Same Branch Agent</li>
+                            {(usersList.length > 0 ? usersList.filter(u => u.branch_id === activeBranchId && u.role_id === 'AGENT') : [
+                              { id: 'alpha_employee', full_name: 'Diya Patel (Helpdesk Specialist)' },
+                              { id: 'alpha_agent_rohan', full_name: 'Rohan Mehta (Support Specialist)' },
+                              { id: 'alpha_agent_kavita', full_name: 'Kavita Sen (Customer Success)' }
                             ]).map(agent => (
                               <li key={agent.id}>
                                 <button
@@ -1015,7 +1154,9 @@ export default function Dashboard() {
                                   onClick={() => handleAssignAgent(selectedConv.id, agent)}
                                 >
                                   <span>{agent.full_name}</span>
-                                  <span className="badge bg-secondary-subtle text-secondary small ms-2">{agent.role_id}</span>
+                                  {selectedConv.assignedUserId === agent.id && (
+                                    <span className="badge bg-primary-subtle text-primary small ms-2">Current</span>
+                                  )}
                                 </button>
                               </li>
                             ))}
@@ -1023,10 +1164,42 @@ export default function Dashboard() {
                         </div>
                       ) : (
                         <div className="d-none d-sm-flex align-items-center gap-1 py-1 px-2 rounded border bg-body-tertiary small text-muted" style={{ fontSize: '0.75rem' }}>
-                          <i className="bi bi-person-fill text-primary"></i>
-                          <span className="text-truncate" style={{ maxWidth: '130px' }}>{selectedConv.assignedTo}</span>
+                          <i className="bi bi-person-check-fill text-success"></i>
+                          <span className="text-truncate" style={{ maxWidth: '130px' }}>Assigned to You</span>
                         </div>
                       )}
+
+                      {/* Transfer to Another Branch Dropdown (Available to both Lead and Regular Agent) */}
+                      <div className="dropdown d-none d-sm-block">
+                        <button
+                          className="btn btn-sm btn-outline-warning dropdown-toggle d-flex align-items-center gap-1 py-1 px-2"
+                          type="button"
+                          data-bs-toggle="dropdown"
+                          aria-expanded="false"
+                          style={{ fontSize: '0.78rem' }}
+                          title="Transfer conversation to another branch"
+                        >
+                          <i className="bi bi-arrow-left-right text-warning"></i>
+                          <span className="d-none d-md-inline">Transfer Branch</span>
+                        </button>
+                        <ul className="dropdown-menu dropdown-menu-end shadow-sm" style={{ fontSize: '0.82rem' }}>
+                          <li className="dropdown-header small text-muted">Transfer to Another Branch</li>
+                          {(branches.length > 0 ? branches.filter(b => b.id !== activeBranchId) : [
+                            { id: 'aaaaaaaa-0002-4000-8000-000000000002', name: 'Noida HQ' },
+                            { id: 'aaaaaaaa-0003-4000-8000-000000000003', name: 'Gurugram Central' }
+                          ]).map(b => (
+                            <li key={b.id}>
+                              <button
+                                className="dropdown-item d-flex align-items-center justify-content-between"
+                                onClick={() => handleTransferBranch(selectedConv.id, b)}
+                              >
+                                <span><i className="bi bi-building me-1 text-primary"></i>{b.name}</span>
+                                <span className="badge bg-light text-muted small ms-2">Transfer</span>
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
 
                       <select
                         className="form-select form-select-sm message-input d-none d-sm-block"
@@ -1052,6 +1225,13 @@ export default function Dashboard() {
                       )}
                     </div>
                   </div>
+
+                  {transferNotice && (
+                    <div className="alert alert-success py-1.5 px-3 small m-2 mb-0 d-flex align-items-center justify-content-between shadow-sm">
+                      <span><i className="bi bi-check-circle-fill me-2 text-success"></i> {transferNotice}</span>
+                      <button className="btn btn-xs btn-link p-0 text-dark" onClick={() => setTransferNotice('')}>×</button>
+                    </div>
+                  )}
 
                   {sendError && (
                     <div className="alert alert-warning py-1 px-3 small m-2 mb-0 d-flex align-items-center justify-content-between">
@@ -1206,13 +1386,24 @@ export default function Dashboard() {
                 </div>
 
                 <div className="mb-3">
+                  <label className="small text-muted fw-semibold d-block mb-1">Branch Queue</label>
+                  <div className="d-flex align-items-center justify-content-between p-2 rounded bg-body-tertiary border mb-2">
+                    <div>
+                      <div className="fw-semibold text-body small">{selectedConv.branchName || 'Greater Noida Hub'}</div>
+                      <div className="text-muted" style={{ fontSize: '0.7rem' }}>Assigned Service Branch</div>
+                    </div>
+                    <span className="badge bg-secondary-subtle text-secondary small">Active</span>
+                  </div>
+                </div>
+
+                <div className="mb-3">
                   <label className="small text-muted fw-semibold d-block mb-1">Assigned Support Agent</label>
                   <div className="d-flex align-items-center justify-content-between p-2 rounded bg-body-tertiary border">
                     <div>
                       <div className="fw-semibold text-body small">{selectedConv.assignedTo}</div>
                       <div className="text-muted" style={{ fontSize: '0.7rem' }}>Primary Inbound Handler</div>
                     </div>
-                    <span className="badge bg-primary-subtle text-primary small">Active</span>
+                    <span className="badge bg-primary-subtle text-primary small">Assigned</span>
                   </div>
                 </div>
 

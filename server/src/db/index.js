@@ -97,6 +97,15 @@ class DatabaseService {
         status: 'active',
         created_at: new Date().toISOString()
       }],
+      ['aaaaaaaa-0003-4000-8000-000000000003', {
+        id: 'aaaaaaaa-0003-4000-8000-000000000003',
+        tenant_id: '11111111-1111-4000-8000-000000000001',
+        name: 'Gurugram Central',
+        code: 'GGN',
+        phone: '+919876543213',
+        status: 'active',
+        created_at: new Date().toISOString()
+      }],
       ['bbbbbbbb-0001-4000-8000-000000000001', {
         id: 'bbbbbbbb-0001-4000-8000-000000000001',
         tenant_id: '22222222-2222-4000-8000-000000000002',
@@ -151,6 +160,28 @@ class DatabaseService {
         id: 'alpha_employee',
         email: 'diya@msquare.com',
         full_name: 'Diya Patel (Helpdesk Specialist)',
+        role_id: 'AGENT',
+        tenant_id: '11111111-1111-4000-8000-000000000001',
+        branch_id: 'aaaaaaaa-0001-4000-8000-000000000001',
+        badge: 'Greater Noida Support',
+        is_active: true,
+        created_at: new Date().toISOString()
+      }],
+      ['alpha_agent_rohan', {
+        id: 'alpha_agent_rohan',
+        email: 'rohan@msquare.com',
+        full_name: 'Rohan Mehta (Support Specialist)',
+        role_id: 'AGENT',
+        tenant_id: '11111111-1111-4000-8000-000000000001',
+        branch_id: 'aaaaaaaa-0001-4000-8000-000000000001',
+        badge: 'Greater Noida Support',
+        is_active: true,
+        created_at: new Date().toISOString()
+      }],
+      ['alpha_agent_kavita', {
+        id: 'alpha_agent_kavita',
+        email: 'kavita@msquare.com',
+        full_name: 'Kavita Sen (Customer Success)',
         role_id: 'AGENT',
         tenant_id: '11111111-1111-4000-8000-000000000001',
         branch_id: 'aaaaaaaa-0001-4000-8000-000000000001',
