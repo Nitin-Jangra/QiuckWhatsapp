@@ -89,7 +89,7 @@ Open [http://localhost:5000](http://localhost:5000) to test:
   - To clean up generated session data: `rm -r server/wa_sessions/`
   - To restore repository before this run: `git clean -fd` or remove `server/` directory.
 
-### Run 2 — Phase 1: Authentication & Multi-Tenant Foundation (2026-10-21)
+### Run 2 — Phase 1: Authentication & Multi-Tenant Foundation (2026-10-21) [Commit: `6ffe157`]
 - **Objective**: Implement Supabase schema migrations, Express authentication middleware, RBAC, tenant & branch management APIs, strict tenant isolation, automated auth tests, and React/Bootstrap frontend client.
 - **Status**: Completed & Verified (12/12 tests passing, Vite frontend bundle built).
 - **Added Files**:
