@@ -164,6 +164,26 @@ You can log in directly at **[http://localhost:3000](http://localhost:3000)** ei
 
 ---
 
+#### Run 5 - Remove Hardcoded Chats, Fix Number Formatting & Auto-Assign to Agent
+- **Timestamp**: 2026-10-21
+- **User Goals**:
+  1. Remove all hardcoded fake chats from the CRM inbox.
+  2. Fix real WhatsApp message dispatch and customer phone number formatting (user was unable to send messages back to customer and the phone number displayed with device suffix/double plus).
+  3. Ensure incoming messages automatically assign the conversation to a branch agent (`Diya Patel (Helpdesk Specialist)`), and provide 1-click reassignment.
+- **Root Cause & Fixes**:
+  - **Phone Number Parsing & Outbound JID Fix**: Baileys JIDs frequently append device indexes (e.g. `:0`, `:1`). Stripped device indices in `session-manager.js` and normalized `cleanPhoneDigits` so numbers are formatted as clean E.164 (`+919053229254`) and displayed formatted (`+91 90532 29254`).
+  - **Hardcoded Fake Chats Removed**: Initialized `conversations` to `[]`. Added empty inbox and empty chat pane states.
+  - **Auto-Assign to Agent**: When an inbound WhatsApp message arrives, it automatically finds the active branch agent (`Diya Patel`) and assigns the conversation. Added 1-click "Assign Agent" dropdown in the chat header to reassign or transfer conversations across branch staff.
+  - **Outbound WhatsApp Dispatch**: Fixed `/api/whatsapp/send` phone normalization and added visible sending error alert banner if the WhatsApp session disconnects or requires QR pairing.
+- **Modified Files**:
+  - `server/src/whatsapp/session-manager.js`: Device index stripping and clean phone normalization.
+  - `server/src/routes/whatsapp.js`: Normalized customer phone and added SSE broadcast on sent messages.
+  - `client/src/pages/Dashboard.jsx`: Removed hardcoded fake chats, added phone formatting helpers, auto-assigned inbound chats to branch agent, added chat header Agent assignment dropdown, and enriched empty states.
+- **Rollback Procedure**:
+  - To revert to Run 4 baseline: `git reset --hard abd5404 && git clean -fd`
+
+---
+
 ### How to Rollback If Stuck
 
 1. **Check Current Status**:

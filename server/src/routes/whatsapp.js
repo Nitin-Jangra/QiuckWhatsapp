@@ -102,17 +102,19 @@ router.post('/send', async (req, res) => {
     }
 
     const result = await connector.sendMessage(tenantId, branchId, to, text);
+    const cleanDigits = to.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
     const sentMsg = {
       tenantId,
       branchId,
       messageId: result.messageId,
       remoteJid: result.jid,
-      customerPhone: to.replace(/[^0-9]/g, ''),
+      customerPhone: cleanDigits ? `+${cleanDigits}` : to,
       fromMe: true,
       text,
       timestamp: result.timestamp
     };
     messageStore.unshift(sentMsg);
+    sendSseEvent(connector.getBranchKey(tenantId, branchId), 'message', sentMsg);
 
     res.json({ success: true, data: result });
   } catch (err) {

@@ -212,7 +212,11 @@ class WhatsAppSessionManager extends EventEmitter {
                        msg.message?.extendedTextMessage?.text ||
                        msg.message?.imageMessage?.caption || '';
 
-          const customerPhone = remoteJid.replace(/@.+/, '');
+          // Cleanly extract customer phone and user JID without device suffix (:0, :1)
+          const rawJid = remoteJid || '';
+          const withoutDomain = rawJid.split('@')[0];
+          const cleanDigits = withoutDomain.split(':')[0].replace(/[^0-9]/g, '');
+          const customerPhone = cleanDigits ? `+${cleanDigits}` : rawJid;
 
           const payload = {
             tenantId,
@@ -243,10 +247,20 @@ class WhatsAppSessionManager extends EventEmitter {
     const session = this.sessions.get(key);
 
     if (!session || session.status !== 'CONNECTED' || !session.sock) {
-      throw new Error(`WhatsApp session for branch ${branchId} is not connected`);
+      throw new Error(`WhatsApp session for branch ${branchId} is not connected. Please pair via QR code first.`);
     }
 
-    const jid = toPhoneOrJid.includes('@') ? toPhoneOrJid : `${toPhoneOrJid.replace(/[^0-9]/g, '')}@s.whatsapp.net`;
+    let jid;
+    if (toPhoneOrJid.includes('@lid')) {
+      jid = toPhoneOrJid;
+    } else {
+      const cleanDigits = toPhoneOrJid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+      if (!cleanDigits) {
+        throw new Error(`Invalid destination phone number: "${toPhoneOrJid}"`);
+      }
+      jid = `${cleanDigits}@s.whatsapp.net`;
+    }
+
     const result = await session.sock.sendMessage(jid, { text });
 
     const sentMessageId = result?.key?.id;

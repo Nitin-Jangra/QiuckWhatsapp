@@ -25,58 +25,27 @@ export default function Dashboard() {
   const [branches, setBranches] = useState([]);
   const [usersList, setUsersList] = useState([]);
 
-  // Conversations State (Real CRM conversations)
-  const [conversations, setConversations] = useState([
-    {
-      id: 'conv-real-1',
-      customerName: 'Rahul Verma (Growth Inquiry)',
-      customerPhone: '+919876512340',
-      branchName: 'Greater Noida Hub',
-      branchId: 'aaaaaaaa-0001-4000-8000-000000000001',
-      status: 'open',
-      assignedTo: 'Aarav Sharma (Branch Lead)',
-      assignedUserId: 'alpha_branch_admin',
-      unreadCount: 1,
-      lastMessage: 'Hi, I need pricing information for the Enterprise growth automation package.',
-      lastMessageTime: '10:42 AM',
-      messages: [
-        { id: 'm1', fromMe: false, text: 'Hello M Square Support team!', time: '10:40 AM', status: 'read' },
-        { id: 'm2', fromMe: true, text: 'Hello Rahul! Welcome to M Square Professionals. How can we assist you today?', time: '10:41 AM', status: 'read' },
-        { id: 'm3', fromMe: false, text: 'Hi, I need pricing information for the Enterprise growth automation package.', time: '10:42 AM', status: 'delivered' }
-      ],
-      leadInfo: {
-        stage: 'Qualified Lead',
-        tags: ['Growth Package', 'Enterprise', 'WhatsApp CRM'],
-        budget: '₹45,000 / mo',
-        internalNote: 'Followed up via WhatsApp. Interested in multi-branch WhatsApp connector module.'
-      }
-    },
-    {
-      id: 'conv-real-2',
-      customerName: 'Priya Sharma (Corporate Partner)',
-      customerPhone: '+919811154321',
-      branchName: 'Greater Noida Hub',
-      branchId: 'aaaaaaaa-0001-4000-8000-000000000001',
-      status: 'open',
-      assignedTo: 'Aarav Sharma (Branch Lead)',
-      assignedUserId: 'alpha_branch_admin',
-      unreadCount: 0,
-      lastMessage: 'Sure, let us schedule a demo tomorrow at 3 PM.',
-      lastMessageTime: '09:15 AM',
-      messages: [
-        { id: 'm21', fromMe: false, text: 'Can we connect our official WhatsApp number without losing existing chat history?', time: '09:10 AM', status: 'read' },
-        { id: 'm22', fromMe: true, text: 'Sure, let us schedule a demo tomorrow at 3 PM.', time: '09:15 AM', status: 'read' }
-      ],
-      leadInfo: {
-        stage: 'Demo Scheduled',
-        tags: ['Demo', 'High Priority'],
-        budget: '₹75,000 / mo',
-        internalNote: 'Scheduled for tomorrow at 3 PM. Needs QR reconnection walkthrough.'
-      }
-    }
-  ]);
+  // Phone number normalization & display helpers
+  const cleanPhoneDigits = (raw) => {
+    if (!raw) return '';
+    return raw.toString().split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+  };
 
-  const [selectedConvId, setSelectedConvId] = useState('conv-real-1');
+  const formatDisplayPhone = (raw) => {
+    const digits = cleanPhoneDigits(raw);
+    if (!digits) return raw || '';
+    if (digits.length === 12 && digits.startsWith('91')) {
+      return `+91 ${digits.slice(2, 7)} ${digits.slice(7)}`;
+    }
+    if (digits.length === 10) {
+      return `+91 ${digits.slice(0, 5)} ${digits.slice(5)}`;
+    }
+    return `+${digits}`;
+  };
+
+  // Conversations State (Real WhatsApp conversations only - no hardcoded fakes)
+  const [conversations, setConversations] = useState([]);
+  const [selectedConvId, setSelectedConvId] = useState(null);
   const [chatFilter, setChatFilter] = useState('all'); // 'all', 'mine', 'unread', 'resolved'
   const [searchQuery, setSearchQuery] = useState('');
   const [replyText, setReplyText] = useState('');
@@ -92,7 +61,7 @@ export default function Dashboard() {
   const messagesEndRef = useRef(null);
 
   // Selected conversation
-  const selectedConv = conversations.find(c => c.id === selectedConvId) || conversations[0];
+  const selectedConv = conversations.find(c => c.id === selectedConvId) || conversations[0] || null;
 
   // Auto-scroll messages to bottom
   useEffect(() => {
@@ -187,17 +156,73 @@ export default function Dashboard() {
     }
   };
 
-  // Load live branches and users from Express API
+  // Load live branches, users, and message history from Express API
   const refreshData = async () => {
     setIsSyncing(true);
     try {
       const headers = { Authorization: `Bearer ${token}` };
-      const [bRes, uRes] = await Promise.all([
+      const [bRes, uRes, mRes] = await Promise.all([
         fetch('/api/branches', { headers }).then(r => r.json()).catch(() => ({})),
-        fetch('/api/users', { headers }).then(r => r.json()).catch(() => ({}))
+        fetch('/api/users', { headers }).then(r => r.json()).catch(() => ({})),
+        fetch(`/api/whatsapp/messages?tenantId=${activeTenantId}&branchId=${activeBranchId}`).then(r => r.json()).catch(() => ({}))
       ]);
       if (bRes.success) setBranches(bRes.data || []);
       if (uRes.success) setUsersList(uRes.data || []);
+
+      // If backend has real messages, reconstruct conversations
+      if (mRes.success && Array.isArray(mRes.data) && mRes.data.length > 0) {
+        setConversations(prev => {
+          if (prev.length > 0) return prev; // Do not overwrite active state
+          const map = new Map();
+          const sorted = [...mRes.data].reverse();
+          for (const msg of sorted) {
+            const digits = cleanPhoneDigits(msg.customerPhone || msg.remoteJid);
+            if (!digits) continue;
+            const cPhone = `+${digits}`;
+            const dPhone = formatDisplayPhone(digits);
+            if (!map.has(digits)) {
+              map.set(digits, {
+                id: 'conv-' + digits,
+                customerName: `Customer (${dPhone})`,
+                customerPhone: cPhone,
+                branchName: 'Greater Noida Hub',
+                branchId: activeBranchId,
+                status: 'open',
+                assignedTo: 'Diya Patel (Helpdesk Specialist)',
+                assignedUserId: 'alpha_employee',
+                unreadCount: 0,
+                lastMessage: msg.text || '',
+                lastMessageTime: new Date(msg.timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                messages: [],
+                leadInfo: {
+                  stage: 'WhatsApp Inbound',
+                  tags: ['Live WhatsApp'],
+                  budget: 'TBD',
+                  internalNote: 'Live WhatsApp conversation automatically assigned to Helpdesk Specialist.'
+                }
+              });
+            }
+            const conv = map.get(digits);
+            conv.lastMessage = msg.text || '';
+            conv.lastMessageTime = new Date(msg.timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            if (!conv.messages.some(m => m.id === msg.messageId)) {
+              conv.messages.push({
+                id: msg.messageId || 'm-' + Date.now(),
+                fromMe: msg.fromMe || false,
+                text: msg.text || '',
+                time: new Date(msg.timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+                status: 'delivered'
+              });
+            }
+          }
+          const loaded = Array.from(map.values());
+          if (loaded.length > 0 && !selectedConvId) {
+            setSelectedConvId(loaded[0].id);
+          }
+          return loaded;
+        });
+      }
+
       await checkWhatsAppStatus();
     } catch (err) {
       console.error('Error refreshing backend data:', err);
@@ -210,7 +235,7 @@ export default function Dashboard() {
     refreshData();
   }, [token]);
 
-  // Real-Time Server-Sent Events (SSE) Listener for live QR & messages
+  // Real-Time Server-Sent Events (SSE) Listener for live QR & real WhatsApp messages
   useEffect(() => {
     const sseUrl = `/api/whatsapp/events?tenantId=${activeTenantId}&branchId=${activeBranchId}`;
     const es = new EventSource(sseUrl);
@@ -239,11 +264,20 @@ export default function Dashboard() {
     es.addEventListener('message', (e) => {
       try {
         const msg = JSON.parse(e.data);
-        const incomingPhone = msg.customerPhone || msg.remoteJid?.split('@')[0];
+        const incomingDigits = cleanPhoneDigits(msg.customerPhone || msg.remoteJid);
+        if (!incomingDigits) return;
+
+        const canonicalPhone = `+${incomingDigits}`;
+        const displayPhone = formatDisplayPhone(incomingDigits);
         const incomingText = msg.text || '';
 
+        // Auto-assign chat to branch agent (e.g., Diya Patel)
+        const branchAgent = usersList.find(u => u.branch_id === activeBranchId && u.role_id === 'AGENT')
+          || usersList.find(u => u.role_id === 'AGENT')
+          || { full_name: 'Diya Patel (Helpdesk Specialist)', id: 'alpha_employee' };
+
         setConversations(prev => {
-          const existing = prev.find(c => c.customerPhone.replace(/[^0-9]/g, '') === incomingPhone.replace(/[^0-9]/g, ''));
+          const existing = prev.find(c => cleanPhoneDigits(c.customerPhone) === incomingDigits);
           const newMsgObj = {
             id: msg.messageId || 'm-' + Date.now(),
             fromMe: msg.fromMe || false,
@@ -253,30 +287,32 @@ export default function Dashboard() {
           };
 
           if (existing) {
+            // Check for deduplication
+            const alreadyHasMsg = existing.messages.some(m => m.id === newMsgObj.id);
             return prev.map(c => {
               if (c.id === existing.id) {
                 return {
                   ...c,
                   lastMessage: incomingText,
                   lastMessageTime: 'Just now',
-                  unreadCount: c.id === selectedConvId ? c.unreadCount : c.unreadCount + 1,
-                  messages: [...c.messages, newMsgObj]
+                  unreadCount: (!msg.fromMe && c.id !== selectedConvId) ? c.unreadCount + 1 : c.unreadCount,
+                  messages: alreadyHasMsg ? c.messages : [...c.messages, newMsgObj]
                 };
               }
               return c;
             });
           } else {
-            // New incoming customer conversation!
+            // New incoming customer conversation: auto-assign to branch agent!
             const newConv = {
-              id: 'conv-' + Date.now(),
-              customerName: `Customer (${incomingPhone})`,
-              customerPhone: '+' + incomingPhone,
+              id: 'conv-' + incomingDigits,
+              customerName: `Customer (${displayPhone})`,
+              customerPhone: canonicalPhone,
               branchName: 'Greater Noida Hub',
               branchId: activeBranchId,
               status: 'open',
-              assignedTo: user?.full_name || 'Aarav Sharma (Branch Lead)',
-              assignedUserId: user?.id || 'alpha_branch_admin',
-              unreadCount: 1,
+              assignedTo: branchAgent.full_name,
+              assignedUserId: branchAgent.id,
+              unreadCount: msg.fromMe ? 0 : 1,
               lastMessage: incomingText,
               lastMessageTime: 'Just now',
               messages: [newMsgObj],
@@ -284,19 +320,42 @@ export default function Dashboard() {
                 stage: 'New Inquiry',
                 tags: ['Live WhatsApp', 'Inbound'],
                 budget: 'TBD',
-                internalNote: 'Customer contacted directly via WhatsApp.'
+                internalNote: `Incoming customer inquiry auto-assigned to ${branchAgent.full_name}.`
               }
             };
+
+            // Auto-select conversation if none active
+            setSelectedConvId(prevId => prevId || newConv.id);
             return [newConv, ...prev];
           }
         });
-      } catch (err) {}
+      } catch (err) {
+        console.error('Error handling SSE message event:', err);
+      }
     });
 
     return () => es.close();
-  }, [activeTenantId, activeBranchId, selectedConvId]);
+  }, [activeTenantId, activeBranchId, selectedConvId, usersList]);
 
-  // Send WhatsApp message (supports any real number)
+  // Assign or transfer conversation to an agent
+  const handleAssignAgent = (convId, agent) => {
+    setConversations(prev => prev.map(c => {
+      if (c.id === convId) {
+        return {
+          ...c,
+          assignedTo: agent.full_name,
+          assignedUserId: agent.id,
+          leadInfo: {
+            ...c.leadInfo,
+            internalNote: `${c.leadInfo?.internalNote || ''}\n[Assigned to ${agent.full_name} at ${new Date().toLocaleTimeString()}]`.trim()
+          }
+        };
+      }
+      return c;
+    }));
+  };
+
+  // Send WhatsApp message back to customer
   const handleSendMessage = async (e) => {
     e?.preventDefault();
     if (!replyText.trim() || !selectedConv) return;
@@ -306,12 +365,13 @@ export default function Dashboard() {
     setReplyText('');
     setIsSending(true);
 
+    const newMsgId = 'm-' + Date.now();
     const newMsg = {
-      id: 'm-' + Date.now(),
+      id: newMsgId,
       fromMe: true,
       text: messageText,
       time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      status: 'sent'
+      status: 'sending'
     };
 
     // Optimistically update conversation
@@ -327,35 +387,60 @@ export default function Dashboard() {
       return c;
     }));
 
-    // Trigger backend WhatsApp connector dispatch to real number
+    // Trigger backend WhatsApp connector dispatch to real customer phone
     try {
+      const cleanTargetPhone = cleanPhoneDigits(selectedConv.customerPhone);
+      if (!cleanTargetPhone) {
+        throw new Error('Customer phone number is invalid.');
+      }
+
       const res = await fetch('/api/whatsapp/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           tenantId: activeTenantId,
           branchId: activeBranchId,
-          to: selectedConv.customerPhone,
+          to: `+${cleanTargetPhone}`,
           text: messageText
         })
       });
       const data = await res.json();
       if (!data.success) {
-        setSendError(data.error || 'Failed to dispatch via WhatsApp');
+        const errMsg = data.error || 'Failed to dispatch via WhatsApp';
+        setSendError(errMsg);
+        // Mark message status as failed
+        setConversations(prev => prev.map(c => {
+          if (c.id === selectedConv.id) {
+            return {
+              ...c,
+              messages: c.messages.map(m => m.id === newMsgId ? { ...m, status: 'failed' } : m)
+            };
+          }
+          return c;
+        }));
       } else {
         // Mark as delivered
         setConversations(prev => prev.map(c => {
           if (c.id === selectedConv.id) {
             return {
               ...c,
-              messages: c.messages.map(m => m.id === newMsg.id ? { ...m, status: 'delivered' } : m)
+              messages: c.messages.map(m => m.id === newMsgId ? { ...m, status: 'delivered' } : m)
             };
           }
           return c;
         }));
       }
     } catch (err) {
-      setSendError(err.message);
+      setSendError(err.message || 'Network error sending WhatsApp message');
+      setConversations(prev => prev.map(c => {
+        if (c.id === selectedConv.id) {
+          return {
+            ...c,
+            messages: c.messages.map(m => m.id === newMsgId ? { ...m, status: 'failed' } : m)
+          };
+        }
+        return c;
+      }));
     } finally {
       setIsSending(false);
     }
@@ -366,19 +451,39 @@ export default function Dashboard() {
     e?.preventDefault();
     if (!newChatPhone.trim()) return;
 
-    const formattedPhone = newChatPhone.trim().startsWith('+') ? newChatPhone.trim() : '+' + newChatPhone.trim();
-    const customerTitle = newChatName.trim() || `Client (${formattedPhone})`;
+    const digits = cleanPhoneDigits(newChatPhone);
+    if (!digits) {
+      alert('Please enter a valid phone number with country code (e.g. 919053229254)');
+      return;
+    }
 
-    const newConvId = 'conv-real-' + Date.now();
+    const canonicalPhone = `+${digits}`;
+    const displayPhone = formatDisplayPhone(digits);
+    const customerTitle = newChatName.trim() || `Customer (${displayPhone})`;
+
+    // Check if conversation already exists
+    const existing = conversations.find(c => cleanPhoneDigits(c.customerPhone) === digits);
+    if (existing) {
+      setSelectedConvId(existing.id);
+      setShowNewChatModal(false);
+      setMobileChatOpen(true);
+      return;
+    }
+
+    const branchAgent = usersList.find(u => u.branch_id === activeBranchId && u.role_id === 'AGENT')
+      || usersList.find(u => u.role_id === 'AGENT')
+      || { full_name: 'Diya Patel (Helpdesk Specialist)', id: 'alpha_employee' };
+
+    const newConvId = 'conv-' + digits;
     const newConv = {
       id: newConvId,
       customerName: customerTitle,
-      customerPhone: formattedPhone,
+      customerPhone: canonicalPhone,
       branchName: 'Greater Noida Hub',
       branchId: activeBranchId,
       status: 'open',
-      assignedTo: user?.full_name || 'Aarav Sharma (Branch Lead)',
-      assignedUserId: user?.id || 'alpha_branch_admin',
+      assignedTo: branchAgent.full_name,
+      assignedUserId: branchAgent.id,
       unreadCount: 0,
       lastMessage: newChatInitialMsg || 'Conversation initiated',
       lastMessageTime: 'Just now',
@@ -394,8 +499,8 @@ export default function Dashboard() {
       leadInfo: {
         stage: 'Direct Outbound',
         tags: ['New Lead', 'WhatsApp CRM'],
-        budget: '₹50,000 / mo',
-        internalNote: 'Real customer chat initiated by Branch Lead.'
+        budget: 'TBD',
+        internalNote: `Real chat initiated by ${user?.full_name || 'Team'}. Assigned to ${branchAgent.full_name}.`
       }
     };
 
@@ -413,7 +518,7 @@ export default function Dashboard() {
           body: JSON.stringify({
             tenantId: activeTenantId,
             branchId: activeBranchId,
-            to: formattedPhone,
+            to: canonicalPhone,
             text: newChatInitialMsg
           })
         });
@@ -781,7 +886,7 @@ export default function Dashboard() {
                         </div>
                         <div className="d-flex align-items-center gap-1 mb-1">
                           <span className="badge bg-body-tertiary border text-body" style={{ fontSize: '0.68rem' }}>
-                            {c.customerPhone}
+                            {formatDisplayPhone(c.customerPhone)}
                           </span>
                           {getStatusBadge(c.status)}
                           {c.unreadCount > 0 && (
@@ -833,7 +938,7 @@ export default function Dashboard() {
                         <div className="fw-bold mb-0 text-body d-flex align-items-center gap-2 text-truncate">
                           <span className="text-truncate">{selectedConv.customerName}</span>
                           <span className="badge bg-body-tertiary text-muted border small fw-normal d-none d-sm-inline-block">
-                            {selectedConv.customerPhone}
+                            {formatDisplayPhone(selectedConv.customerPhone)}
                           </span>
                         </div>
                         <div className="text-muted small d-flex align-items-center gap-2" style={{ fontSize: '0.74rem' }}>
@@ -844,11 +949,45 @@ export default function Dashboard() {
                       </div>
                     </div>
 
-                    {/* Status & WhatsApp session refresh indicator */}
+                    {/* Agent Assignment & Status Controls */}
                     <div className="d-flex align-items-center gap-2">
+                      {/* Assign to Agent Dropdown */}
+                      <div className="dropdown d-none d-sm-block">
+                        <button
+                          className="btn btn-sm btn-outline-secondary dropdown-toggle d-flex align-items-center gap-1 py-1 px-2"
+                          type="button"
+                          data-bs-toggle="dropdown"
+                          aria-expanded="false"
+                          style={{ fontSize: '0.78rem' }}
+                          title="Assign conversation to an agent"
+                        >
+                          <i className="bi bi-person-badge text-primary"></i>
+                          <span className="text-truncate" style={{ maxWidth: '140px' }}>
+                            {selectedConv.assignedTo || 'Assign Agent'}
+                          </span>
+                        </button>
+                        <ul className="dropdown-menu dropdown-menu-end shadow-sm" style={{ fontSize: '0.82rem' }}>
+                          <li className="dropdown-header small text-muted">Assign Branch Agent</li>
+                          {(usersList.length > 0 ? usersList : [
+                            { id: 'alpha_employee', full_name: 'Diya Patel (Helpdesk Specialist)', role_id: 'AGENT' },
+                            { id: 'alpha_branch_admin', full_name: 'Aarav Sharma (Branch Lead)', role_id: 'BRANCH_ADMIN' }
+                          ]).map(agent => (
+                            <li key={agent.id}>
+                              <button
+                                className={`dropdown-item d-flex align-items-center justify-content-between ${selectedConv.assignedUserId === agent.id ? 'active' : ''}`}
+                                onClick={() => handleAssignAgent(selectedConv.id, agent)}
+                              >
+                                <span>{agent.full_name}</span>
+                                <span className="badge bg-secondary-subtle text-secondary small ms-2">{agent.role_id}</span>
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+
                       <select
                         className="form-select form-select-sm message-input d-none d-sm-block"
-                        style={{ width: '120px' }}
+                        style={{ width: '115px' }}
                         value={selectedConv.status}
                         onChange={(e) => handleStatusChange(e.target.value)}
                       >
@@ -965,8 +1104,30 @@ export default function Dashboard() {
                   </div>
                 </>
               ) : (
-                <div className="d-flex align-items-center justify-content-center h-100 text-muted">
-                  No conversation selected
+                <div className="d-flex flex-column align-items-center justify-content-center h-100 p-4 text-center">
+                  <div className="rounded-circle bg-body-tertiary d-inline-flex p-4 mb-3 text-secondary shadow-sm">
+                    <i className="bi bi-whatsapp fs-1 text-success"></i>
+                  </div>
+                  <h5 className="fw-bold text-body mb-2">WhatsApp Live CRM Inbox</h5>
+                  <p className="text-muted small mb-4" style={{ maxWidth: '440px' }}>
+                    No hardcoded fake chats. Connect your live WhatsApp session using the QR button in the header. When any customer sends a message to your WhatsApp number, it will instantly appear here and automatically assign to an agent.
+                  </p>
+                  <div className="d-flex gap-2">
+                    {isBranchLead && (
+                      <button
+                        className="btn btn-sm btn-msquare-primary"
+                        onClick={handleConnectWhatsApp}
+                      >
+                        <i className="bi bi-qr-code me-1"></i> Connect WhatsApp QR
+                      </button>
+                    )}
+                    <button
+                      className="btn btn-sm btn-msquare-outline"
+                      onClick={() => setShowNewChatModal(true)}
+                    >
+                      <i className="bi bi-chat-dots me-1"></i> + New Real Chat
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
@@ -998,7 +1159,18 @@ export default function Dashboard() {
                     {selectedConv.customerName.charAt(0)}
                   </div>
                   <h6 className="fw-bold mb-0 text-body">{selectedConv.customerName}</h6>
-                  <span className="text-muted small">{selectedConv.customerPhone}</span>
+                  <span className="text-muted small">{formatDisplayPhone(selectedConv.customerPhone)}</span>
+                </div>
+
+                <div className="mb-3">
+                  <label className="small text-muted fw-semibold d-block mb-1">Assigned Support Agent</label>
+                  <div className="d-flex align-items-center justify-content-between p-2 rounded bg-body-tertiary border">
+                    <div>
+                      <div className="fw-semibold text-body small">{selectedConv.assignedTo}</div>
+                      <div className="text-muted" style={{ fontSize: '0.7rem' }}>Primary Inbound Handler</div>
+                    </div>
+                    <span className="badge bg-primary-subtle text-primary small">Active</span>
+                  </div>
                 </div>
 
                 <div className="mb-3">
