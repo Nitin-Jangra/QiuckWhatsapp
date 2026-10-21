@@ -35,7 +35,19 @@ Open [http://localhost:5000](http://localhost:5000) to test:
 - Generating QR code per tenant/branch
 - Disconnect & reconnect workflows
 - Multi-branch session directory isolation
-- Live message streaming via SSE
+---
+
+## 🔑 Pre-Configured Login Credentials
+
+You can log in directly at **[http://localhost:3000](http://localhost:3000)** either by typing the email (any password works in development mode) or by clicking the one-click persona buttons on the login card:
+
+| Role | Name | Email | Password | Assigned Branch / Scope |
+|---|---|---|---|---|
+| **Branch Lead** | Aarav Sharma | `aarav@msquare.com` | `admin123` | Greater Noida Hub (`GNOIDA`) |
+| **Helpdesk Specialist** | Diya Patel | `diya@msquare.com` | `admin123` | Greater Noida Support (`GNOIDA`) |
+| **VP Operations** | Vikram Mehta | `vikram@msquare.com` | `admin123` | Corporate HQ (Tenant Admin) |
+| **Super Admin** | System Super Admin | `superadmin@msquare.com` | `admin123` | Global Cross-Tenant Admin |
+| **Branch Lead (Enterprise)** | Karan Mehra | `karan@msquare.com` | `admin123` | Jaipur Hub (`JAIPUR`) |
 
 ---
 
