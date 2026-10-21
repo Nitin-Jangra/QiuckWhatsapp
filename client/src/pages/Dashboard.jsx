@@ -181,10 +181,12 @@ export default function Dashboard() {
             const cPhone = `+${digits}`;
             const dPhone = formatDisplayPhone(digits);
             if (!map.has(digits)) {
+              const displayName = msg.pushName ? `${msg.pushName} (${dPhone})` : `Customer (${dPhone})`;
               map.set(digits, {
                 id: 'conv-' + digits,
-                customerName: `Customer (${dPhone})`,
+                customerName: displayName,
                 customerPhone: cPhone,
+                remoteJid: msg.remoteJid || null,
                 branchName: 'Greater Noida Hub',
                 branchId: activeBranchId,
                 status: 'open',
@@ -293,6 +295,8 @@ export default function Dashboard() {
               if (c.id === existing.id) {
                 return {
                   ...c,
+                  remoteJid: c.remoteJid || msg.remoteJid,
+                  customerName: (msg.pushName && c.customerName.startsWith('Customer (')) ? `${msg.pushName} (${displayPhone})` : c.customerName,
                   lastMessage: incomingText,
                   lastMessageTime: 'Just now',
                   unreadCount: (!msg.fromMe && c.id !== selectedConvId) ? c.unreadCount + 1 : c.unreadCount,
@@ -303,10 +307,12 @@ export default function Dashboard() {
             });
           } else {
             // New incoming customer conversation: auto-assign to branch agent!
+            const displayName = msg.pushName ? `${msg.pushName} (${displayPhone})` : `Customer (${displayPhone})`;
             const newConv = {
               id: 'conv-' + incomingDigits,
-              customerName: `Customer (${displayPhone})`,
+              customerName: displayName,
               customerPhone: canonicalPhone,
+              remoteJid: msg.remoteJid || null,
               branchName: 'Greater Noida Hub',
               branchId: activeBranchId,
               status: 'open',
@@ -390,8 +396,9 @@ export default function Dashboard() {
     // Trigger backend WhatsApp connector dispatch to real customer phone
     try {
       const cleanTargetPhone = cleanPhoneDigits(selectedConv.customerPhone);
-      if (!cleanTargetPhone) {
-        throw new Error('Customer phone number is invalid.');
+      const targetDestination = selectedConv.remoteJid || (cleanTargetPhone ? `+${cleanTargetPhone}` : selectedConv.customerPhone);
+      if (!targetDestination) {
+        throw new Error('Destination phone number or WhatsApp JID is invalid.');
       }
 
       const res = await fetch('/api/whatsapp/send', {
@@ -400,7 +407,8 @@ export default function Dashboard() {
         body: JSON.stringify({
           tenantId: activeTenantId,
           branchId: activeBranchId,
-          to: `+${cleanTargetPhone}`,
+          to: targetDestination,
+          remoteJid: selectedConv.remoteJid || null,
           text: messageText
         })
       });

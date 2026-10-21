@@ -15,6 +15,7 @@ class WhatsAppSessionManager extends EventEmitter {
     this.sessionBasePath = options.sessionBasePath || path.join(process.cwd(), 'wa_sessions');
     this.sessions = new Map(); // key: branchKey -> { sock, status, qr, qrDataUrl, userInfo, lastError }
     this.processedMessageIds = new Map(); // msgId -> timestamp for deduplication
+    this.destinationJidCache = new Map(); // phone/digits -> original remoteJid for reliable reply routing
     this.logger = pino({ level: options.logLevel || 'silent' });
 
     // Periodically clean up message deduplication cache older than 1 hour
@@ -218,12 +219,19 @@ class WhatsAppSessionManager extends EventEmitter {
           const cleanDigits = withoutDomain.split(':')[0].replace(/[^0-9]/g, '');
           const customerPhone = cleanDigits ? `+${cleanDigits}` : rawJid;
 
+          // Save destination mapping for reliable reply resolution (handles both standard numbers & @lid privacy IDs)
+          if (cleanDigits && rawJid) {
+            this.destinationJidCache.set(cleanDigits, rawJid);
+            this.destinationJidCache.set(`+${cleanDigits}`, rawJid);
+          }
+
           const payload = {
             tenantId,
             branchId,
             messageId: msgId,
-            remoteJid,
+            remoteJid: rawJid,
             customerPhone,
+            pushName: msg.pushName || '',
             fromMe,
             text,
             timestamp: msg.messageTimestamp ? new Date(msg.messageTimestamp * 1000).toISOString() : new Date().toISOString()
@@ -251,14 +259,28 @@ class WhatsAppSessionManager extends EventEmitter {
     }
 
     let jid;
+    // 1. Direct JID format (@lid, @s.whatsapp.net, @g.us)
     if (toPhoneOrJid.includes('@lid')) {
+      const user = toPhoneOrJid.split('@')[0].split(':')[0];
+      jid = `${user}@lid`;
+    } else if (toPhoneOrJid.includes('@s.whatsapp.net')) {
+      const cleanDigits = toPhoneOrJid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
+      jid = `${cleanDigits}@s.whatsapp.net`;
+    } else if (toPhoneOrJid.includes('@g.us')) {
       jid = toPhoneOrJid;
     } else {
+      // 2. Phone digits: check if we have a known cached remoteJid for this contact (e.g. from an @lid inbound chat)
       const cleanDigits = toPhoneOrJid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
-      if (!cleanDigits) {
-        throw new Error(`Invalid destination phone number: "${toPhoneOrJid}"`);
+      if (this.destinationJidCache.has(cleanDigits)) {
+        jid = this.destinationJidCache.get(cleanDigits);
+      } else if (this.destinationJidCache.has(`+${cleanDigits}`)) {
+        jid = this.destinationJidCache.get(`+${cleanDigits}`);
+      } else {
+        if (!cleanDigits) {
+          throw new Error(`Invalid destination phone number: "${toPhoneOrJid}"`);
+        }
+        jid = `${cleanDigits}@s.whatsapp.net`;
       }
-      jid = `${cleanDigits}@s.whatsapp.net`;
     }
 
     const result = await session.sock.sendMessage(jid, { text });

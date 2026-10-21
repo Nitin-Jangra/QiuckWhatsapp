@@ -95,13 +95,14 @@ router.post('/send', async (req, res) => {
   try {
     const tenantId = req.body.tenantId || 'tenant-demo';
     const branchId = req.body.branchId || 'branch-main';
-    const { to, text } = req.body;
+    const { to, text, remoteJid } = req.body;
 
     if (!to || !text) {
       return res.status(400).json({ success: false, error: 'Parameters "to" and "text" are required' });
     }
 
-    const result = await connector.sendMessage(tenantId, branchId, to, text);
+    const targetDestination = remoteJid || to;
+    const result = await connector.sendMessage(tenantId, branchId, targetDestination, text);
     const cleanDigits = to.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
     const sentMsg = {
       tenantId,

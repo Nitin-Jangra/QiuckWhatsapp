@@ -184,6 +184,20 @@ You can log in directly at **[http://localhost:3000](http://localhost:3000)** ei
 
 ---
 
+#### Run 6 - Fix WhatsApp Outbound Replies to @lid Privacy JIDs & Destination Caching
+- **Timestamp**: 2026-10-21
+- **Root Cause Identified**:
+  - In modern WhatsApp multi-device and privacy-enabled personal accounts, incoming messages often carry a Linked Identity JID (`@lid`, e.g. `141382521979108@lid`).
+  - Previously, `cleanPhoneDigits` stripped the `@lid` domain and posted `to: '+141382521979108'`, causing the server to attempt sending to `141382521979108@s.whatsapp.net` (an invalid phone number JID), which triggered 408 Timeouts and prevented replies.
+- **Fixes Applied**:
+  - **`session-manager.js`**: Added `destinationJidCache` mapping digits and canonical phones back to the original `remoteJid` (including `@lid`). When `sendMessage` receives a phone number or LID, it checks `destinationJidCache` to route to the exact registered WhatsApp destination.
+  - **`routes/whatsapp.js`**: Allowed `remoteJid` to be passed directly in the request body to `/api/whatsapp/send`.
+  - **`Dashboard.jsx`**: Preserved `remoteJid` and `pushName` on both new and existing conversation state; `handleSendMessage` now dispatches to `selectedConv.remoteJid || selectedConv.customerPhone`.
+- **Rollback Procedure**:
+  - To revert to Run 5 baseline: `git reset --hard a0f27e7 && git clean -fd`
+
+---
+
 ### How to Rollback If Stuck
 
 1. **Check Current Status**:
