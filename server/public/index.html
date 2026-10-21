@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WaCRM Phase 0 — WhatsApp Feasibility & QR Prototype</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  <style>
+    body { background-color: #f4f6f9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .card { border-radius: 10px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); border: none; }
+    .chat-box { height: 380px; overflow-y: auto; background: #efeae2; border-radius: 8px; padding: 15px; }
+    .msg-bubble { max-width: 75%; padding: 8px 12px; border-radius: 8px; margin-bottom: 8px; font-size: 0.95rem; }
+    .msg-out { background-color: #d9fdd3; margin-left: auto; text-align: right; }
+    .msg-in { background-color: #ffffff; margin-right: auto; }
+    .msg-meta { font-size: 0.75rem; color: #667781; margin-top: 3px; }
+    .qr-container { min-height: 260px; display: flex; align-items: center; justify-content: center; background: #fff; border-radius: 8px; border: 2px dashed #dee2e6; }
+    .badge-status { font-size: 0.9rem; padding: 6px 12px; }
+  </style>
+</head>
+<body class="py-4">
+  <div class="container-fluid px-4">
+    <!-- Header -->
+    <div class="d-flex justify-content-between align-items-center mb-4 pb-2 border-bottom">
+      <div>
+        <h3 class="fw-bold mb-0 text-success"><i class="bi bi-whatsapp me-2"></i>WaCRM Prototype — Phase 0</h3>
+        <p class="text-muted mb-0 small">WhatsApp Feasibility, QR Re-Authentication & Branch Session Isolation</p>
+      </div>
+      <div class="d-flex align-items-center gap-3">
+        <div class="text-end">
+          <span class="d-block small text-muted">Simulated Role:</span>
+          <select id="userRole" class="form-select form-select-sm">
+            <option value="admin@demo.com">Root/Tenant Admin (admin@demo.com)</option>
+            <option value="agent1@demo.com">Agent 1 (agent1@demo.com)</option>
+            <option value="agent2@demo.com">Agent 2 (agent2@demo.com)</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tenant & Branch Controls -->
+    <div class="card p-3 mb-4">
+      <div class="row g-3 align-items-center">
+        <div class="col-md-3">
+          <label class="form-label small fw-bold text-muted">Tenant</label>
+          <input type="text" id="tenantId" class="form-control" value="tenant-demo">
+        </div>
+        <div class="col-md-3">
+          <label class="form-label small fw-bold text-muted">Branch</label>
+          <select id="branchId" class="form-select" onchange="onBranchChange()">
+            <option value="branch-main">Branch 1 (branch-main)</option>
+            <option value="branch-secondary">Branch 2 (branch-secondary)</option>
+          </select>
+        </div>
+        <div class="col-md-6 d-flex align-items-end justify-content-end gap-2">
+          <button id="btnConnect" class="btn btn-success" onclick="connectSession()">
+            <i class="bi bi-qr-code me-1"></i> Connect / Show QR
+          </button>
+          <button id="btnReconnect" class="btn btn-outline-warning" onclick="reconnectSession()">
+            <i class="bi bi-arrow-clockwise me-1"></i> Reconnect QR
+          </button>
+          <button id="btnDisconnect" class="btn btn-outline-secondary" onclick="disconnectSession(false)">
+            <i class="bi bi-pause-circle me-1"></i> Disconnect
+          </button>
+          <button id="btnLogout" class="btn btn-outline-danger" onclick="disconnectSession(true)">
+            <i class="bi bi-box-arrow-right me-1"></i> Reset Session
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div class="row g-4">
+      <!-- Left: WhatsApp Connection & QR Panel -->
+      <div class="col-lg-5">
+        <div class="card h-100">
+          <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
+            <h5 class="fw-bold mb-0">Connection Status</h5>
+            <span id="statusBadge" class="badge bg-secondary badge-status">DISCONNECTED</span>
+          </div>
+          <div class="card-body text-center p-4">
+            <div id="qrArea" class="qr-container mb-3 p-3">
+              <div id="qrPlaceholder" class="text-muted">
+                <i class="bi bi-qr-code-scan display-4 d-block mb-2"></i>
+                <p class="mb-0">Click <strong>"Connect / Show QR"</strong> to initialize session</p>
+              </div>
+              <img id="qrImage" src="" alt="WhatsApp QR Code" class="img-fluid d-none" style="max-height: 240px;">
+            </div>
+
+            <div id="sessionInfo" class="text-start p-3 bg-light rounded small">
+              <div class="row mb-1">
+                <div class="col-4 fw-bold text-muted">Phone:</div>
+                <div class="col-8" id="infoPhone">—</div>
+              </div>
+              <div class="row mb-1">
+                <div class="col-4 fw-bold text-muted">Session Name:</div>
+                <div class="col-8" id="infoName">—</div>
+              </div>
+              <div class="row mb-1">
+                <div class="col-4 fw-bold text-muted">Last Connect:</div>
+                <div class="col-8" id="infoLastConnected">—</div>
+              </div>
+              <div class="row">
+                <div class="col-4 fw-bold text-muted">Error/Notice:</div>
+                <div class="col-8 text-danger" id="infoError">—</div>
+              </div>
+            </div>
+
+            <div class="alert alert-info mt-3 text-start small mb-0">
+              <i class="bi bi-info-circle-fill me-1"></i>
+              <strong>Multi-Device Note:</strong> Open WhatsApp on your phone &rarr; Settings &rarr; Linked Devices &rarr; Link a Device &rarr; Scan QR.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: Live Inbox & Message Tester -->
+      <div class="col-lg-7">
+        <div class="card h-100">
+          <div class="card-header bg-white py-3 d-flex justify-content-between align-items-center">
+            <h5 class="fw-bold mb-0">Shared Conversation Preview</h5>
+            <button class="btn btn-sm btn-outline-primary" onclick="loadMessages()">
+              <i class="bi bi-arrow-repeat"></i> Refresh
+            </button>
+          </div>
+          <div class="card-body d-flex flex-column p-3">
+            <div id="chatBox" class="chat-box flex-grow-1 mb-3">
+              <div class="text-center text-muted py-5" id="chatEmpty">
+                <i class="bi bi-chat-dots display-6 d-block mb-2"></i>
+                No messages yet. Send a test message or reply from WhatsApp.
+              </div>
+            </div>
+
+            <!-- Message Input -->
+            <form id="sendForm" onsubmit="sendMessage(event)" class="mt-auto">
+              <div class="row g-2">
+                <div class="col-md-4">
+                  <input type="text" id="targetPhone" class="form-control" placeholder="Recipient (e.g. 919876543210)" required>
+                </div>
+                <div class="col-md-6">
+                  <input type="text" id="messageText" class="form-control" placeholder="Type message..." required>
+                </div>
+                <div class="col-md-2">
+                  <button type="submit" id="btnSend" class="btn btn-success w-100">
+                    <i class="bi bi-send-fill"></i> Send
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let eventSource = null;
+
+    function getTenantId() { return document.getElementById('tenantId').value.trim(); }
+    function getBranchId() { return document.getElementById('branchId').value; }
+
+    function onBranchChange() {
+      setupSSE();
+      checkStatus();
+      loadMessages();
+    }
+
+    function setupSSE() {
+      if (eventSource) {
+        eventSource.close();
+      }
+      const tenantId = getTenantId();
+      const branchId = getBranchId();
+      eventSource = new EventSource(`/api/whatsapp/events?tenantId=${encodeURIComponent(tenantId)}&branchId=${encodeURIComponent(branchId)}`);
+
+      eventSource.addEventListener('status', (e) => {
+        const data = JSON.parse(e.data);
+        renderStatus(data);
+      });
+
+      eventSource.addEventListener('qr', (e) => {
+        const data = JSON.parse(e.data);
+        renderQR(data.qrDataUrl);
+      });
+
+      eventSource.addEventListener('message', (e) => {
+        const msg = JSON.parse(e.data);
+        appendMessage(msg);
+      });
+    }
+
+    function renderStatus(data) {
+      const badge = document.getElementById('statusBadge');
+      badge.textContent = data.status;
+      badge.className = 'badge badge-status';
+
+      if (data.status === 'CONNECTED') {
+        badge.classList.add('bg-success');
+        document.getElementById('qrImage').classList.add('d-none');
+        document.getElementById('qrPlaceholder').innerHTML = '<i class="bi bi-check-circle-fill text-success display-4 d-block mb-2"></i><p class="mb-0 text-success fw-bold">Connected to WhatsApp</p>';
+        document.getElementById('qrPlaceholder').classList.remove('d-none');
+      } else if (data.status === 'SCAN_QR') {
+        badge.classList.add('bg-warning', 'text-dark');
+        if (data.qrDataUrl) renderQR(data.qrDataUrl);
+      } else if (data.status === 'CONNECTING') {
+        badge.classList.add('bg-info', 'text-dark');
+        document.getElementById('qrPlaceholder').innerHTML = '<div class="spinner-border text-info mb-2" role="status"></div><p class="mb-0">Initializing socket connection...</p>';
+        document.getElementById('qrPlaceholder').classList.remove('d-none');
+        document.getElementById('qrImage').classList.add('d-none');
+      } else if (data.status === 'REAUTH_REQUIRED') {
+        badge.classList.add('bg-danger');
+        document.getElementById('qrPlaceholder').innerHTML = '<i class="bi bi-exclamation-triangle-fill text-danger display-4 d-block mb-2"></i><p class="mb-0 text-danger fw-bold">Session Logged Out. Please reconnect.</p>';
+        document.getElementById('qrPlaceholder').classList.remove('d-none');
+        document.getElementById('qrImage').classList.add('d-none');
+      } else {
+        badge.classList.add('bg-secondary');
+        document.getElementById('qrImage').classList.add('d-none');
+        document.getElementById('qrPlaceholder').innerHTML = '<i class="bi bi-qr-code-scan display-4 d-block mb-2"></i><p class="mb-0">Disconnected. Click <strong>"Connect / Show QR"</strong></p>';
+        document.getElementById('qrPlaceholder').classList.remove('d-none');
+      }
+
+      document.getElementById('infoPhone').textContent = data.phone || '—';
+      document.getElementById('infoName').textContent = data.name || '—';
+      document.getElementById('infoLastConnected').textContent = data.lastConnectedAt ? new Date(data.lastConnectedAt).toLocaleTimeString() : '—';
+      document.getElementById('infoError').textContent = data.lastError || data.error || 'None';
+    }
+
+    function renderQR(dataUrl) {
+      if (!dataUrl) return;
+      const img = document.getElementById('qrImage');
+      const placeholder = document.getElementById('qrPlaceholder');
+      img.src = dataUrl;
+      img.classList.remove('d-none');
+      placeholder.classList.add('d-none');
+    }
+
+    async function checkStatus() {
+      try {
+        const res = await fetch(`/api/whatsapp/status?tenantId=${encodeURIComponent(getTenantId())}&branchId=${encodeURIComponent(getBranchId())}`);
+        const json = await res.json();
+        if (json.success) renderStatus(json.data);
+      } catch (err) {
+        console.error('Failed to check status', err);
+      }
+    }
+
+    async function connectSession() {
+      try {
+        document.getElementById('statusBadge').textContent = 'CONNECTING';
+        document.getElementById('statusBadge').className = 'badge badge-status bg-info text-dark';
+        const res = await fetch('/api/whatsapp/connect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tenantId: getTenantId(), branchId: getBranchId() })
+        });
+        const json = await res.json();
+        if (json.success) renderStatus(json.data);
+      } catch (err) {
+        alert('Connect error: ' + err.message);
+      }
+    }
+
+    async function reconnectSession() {
+      try {
+        const res = await fetch('/api/whatsapp/reconnect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tenantId: getTenantId(), branchId: getBranchId() })
+        });
+        const json = await res.json();
+        if (json.success) renderStatus(json.data);
+      } catch (err) {
+        alert('Reconnect error: ' + err.message);
+      }
+    }
+
+    async function disconnectSession(logout = false) {
+      try {
+        const res = await fetch('/api/whatsapp/disconnect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tenantId: getTenantId(), branchId: getBranchId(), logout })
+        });
+        const json = await res.json();
+        checkStatus();
+      } catch (err) {
+        alert('Disconnect error: ' + err.message);
+      }
+    }
+
+    async function sendMessage(e) {
+      e.preventDefault();
+      const to = document.getElementById('targetPhone').value.trim();
+      const text = document.getElementById('messageText').value.trim();
+      if (!to || !text) return;
+
+      const btn = document.getElementById('btnSend');
+      btn.disabled = true;
+      try {
+        const res = await fetch('/api/whatsapp/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ tenantId: getTenantId(), branchId: getBranchId(), to, text })
+        });
+        const json = await res.json();
+        if (json.success) {
+          document.getElementById('messageText').value = '';
+          loadMessages();
+        } else {
+          alert('Send failed: ' + (json.error || 'Unknown error'));
+        }
+      } catch (err) {
+        alert('Send request error: ' + err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    async function loadMessages() {
+      try {
+        const res = await fetch(`/api/whatsapp/messages?tenantId=${encodeURIComponent(getTenantId())}&branchId=${encodeURIComponent(getBranchId())}`);
+        const json = await res.json();
+        if (json.success) {
+          const chatBox = document.getElementById('chatBox');
+          if (json.data.length === 0) {
+            chatBox.innerHTML = '<div class="text-center text-muted py-5" id="chatEmpty"><i class="bi bi-chat-dots display-6 d-block mb-2"></i>No messages yet. Send a test message or reply from WhatsApp.</div>';
+            return;
+          }
+          chatBox.innerHTML = '';
+          json.data.slice().reverse().forEach(msg => appendMessage(msg, false));
+          chatBox.scrollTop = chatBox.scrollHeight;
+        }
+      } catch (err) {
+        console.error('Failed to load messages', err);
+      }
+    }
+
+    function appendMessage(msg, scroll = true) {
+      const chatBox = document.getElementById('chatBox');
+      const empty = document.getElementById('chatEmpty');
+      if (empty) empty.remove();
+
+      const bubble = document.createElement('div');
+      bubble.className = `msg-bubble ${msg.fromMe ? 'msg-out' : 'msg-in'}`;
+      const time = msg.timestamp ? new Date(msg.timestamp).toLocaleTimeString() : '';
+      bubble.innerHTML = `
+        <div class="fw-semibold small text-secondary">${msg.fromMe ? 'Agent' : (msg.customerPhone || 'Customer')}</div>
+        <div>${escapeHtml(msg.text)}</div>
+        <div class="msg-meta">${time} ${msg.fromMe ? '<i class="bi bi-check2-all text-primary"></i>' : ''}</div>
+      `;
+      chatBox.appendChild(bubble);
+      if (scroll) chatBox.scrollTop = chatBox.scrollHeight;
+    }
+
+    function escapeHtml(text) {
+      if (!text) return '';
+      return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    // Initialize on load
+    window.onload = () => {
+      setupSSE();
+      checkStatus();
+      loadMessages();
+    };
+  </script>
+</body>
+</html>

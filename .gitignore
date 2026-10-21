@@ -1,0 +1,13 @@
+node_modules/
+.env
+.env.local
+.env.*.local
+*.log
+wa_sessions/
+sessions/
+auth_info/
+dist/
+build/
+.DS_Store
+Thumbs.db
+.gemini/
