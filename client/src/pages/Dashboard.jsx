@@ -1,41 +1,52 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { useAuth } from '../context/AuthContext';
 
 export default function Dashboard() {
-  const { user, tenant, branch, token, logout, login } = useAuth();
+  // Accounts state
+  const [accounts, setAccounts] = useState([]);
+  const [selectedAccountId, setSelectedAccountId] = useState('all'); // 'all' or specific accountId
+  const [loadingAccounts, setLoadingAccounts] = useState(true);
 
-  // Navigation, Theme & Responsiveness
-  const [activeView, setActiveView] = useState('inbox'); // 'inbox', 'branches', 'channels'
-  const [theme, setTheme] = useState(() => localStorage.getItem('theme') || 'light');
-  const [sidebarMobileOpen, setSidebarMobileOpen] = useState(false);
-  const [mobileChatOpen, setMobileChatOpen] = useState(false);
-  const [isSyncing, setIsSyncing] = useState(false);
+  // Chats state
+  const [chats, setChats] = useState([]);
+  const [selectedChat, setSelectedChat] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [loadingMessages, setLoadingMessages] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [syncNotice, setSyncNotice] = useState('');
+  const [isManualSyncing, setIsManualSyncing] = useState(false);
 
-  // Role permissions check: Only Branch Lead or Root Admin can manage WhatsApp socket/QR
-  const isBranchLead = user?.role_id === 'BRANCH_ADMIN' || user?.role_id === 'ROOT_ADMIN';
-  const activeTenantId = user?.tenant_id || '11111111-1111-4000-8000-000000000001';
-  const activeBranchId = user?.branch_id || 'aaaaaaaa-0001-4000-8000-000000000001';
+  // Messaging state
+  const [replyText, setReplyText] = useState('');
+  const [isSending, setIsSending] = useState(false);
+  const [sendError, setSendError] = useState('');
 
-  // Live WhatsApp Socket State
-  const [waStatus, setWaStatus] = useState('DISCONNECTED'); // DISCONNECTED, SCAN_QR, CONNECTED, CONNECTING
-  const [waQrDataUrl, setWaQrDataUrl] = useState(null);
-  const [waPhone, setWaPhone] = useState(null);
-  const [showQrModal, setShowQrModal] = useState(false);
-  const [qrLoading, setQrLoading] = useState(false);
+  // Attachment / Media sharing state
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [filePreviewUrl, setFilePreviewUrl] = useState(null);
+  const [fileBase64, setFileBase64] = useState(null);
+  const fileInputRef = useRef(null);
 
-  // Backend Data
-  const [branches, setBranches] = useState([]);
-  const [usersList, setUsersList] = useState([]);
+  // Modals state
+  const [showAccountsModal, setShowAccountsModal] = useState(false);
+  const [newAccountName, setNewAccountName] = useState('');
+  const [isCreatingAccount, setIsCreatingAccount] = useState(false);
+  const [qrModalAccount, setQrModalAccount] = useState(null);
 
-  // Phone number normalization & display helpers
-  const cleanPhoneDigits = (raw) => {
+  const [showNewChatModal, setShowNewChatModal] = useState(false);
+  const [newChatAccountId, setNewChatAccountId] = useState('');
+  const [newChatPhone, setNewChatPhone] = useState('');
+  const [newChatText, setNewChatText] = useState('Hi! Thank you for contacting us.');
+  const [isStartingNewChat, setIsStartingNewChat] = useState(false);
+
+  // Lightbox modal for previewing images
+  const [lightboxImage, setLightboxImage] = useState(null);
+
+  const messagesEndRef = useRef(null);
+
+  // Helper phone formatter
+  const formatPhone = (raw) => {
     if (!raw) return '';
-    return raw.toString().split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
-  };
-
-  const formatDisplayPhone = (raw) => {
-    const digits = cleanPhoneDigits(raw);
-    if (!digits) return raw || '';
+    const digits = raw.toString().replace(/[^0-9]/g, '');
     if (digits.length === 12 && digits.startsWith('91')) {
       return `+91 ${digits.slice(2, 7)} ${digits.slice(7)}`;
     }
@@ -45,1604 +56,1266 @@ export default function Dashboard() {
     return `+${digits}`;
   };
 
-  // Conversations State (Real WhatsApp conversations only - no hardcoded fakes)
-  const [conversations, setConversations] = useState([]);
-  const [selectedConvId, setSelectedConvId] = useState(null);
-  const [chatFilter, setChatFilter] = useState('all'); // 'all', 'mine', 'unread', 'resolved'
-  const [agentFilter, setAgentFilter] = useState('all'); // 'all' or agent user id (for Branch Lead)
-  const [searchQuery, setSearchQuery] = useState('');
-  const [replyText, setReplyText] = useState('');
-  const [isSending, setIsSending] = useState(false);
-  const [sendError, setSendError] = useState('');
-  const [transferNotice, setTransferNotice] = useState('');
-
-  // New Real Chat Modal State
-  const [showNewChatModal, setShowNewChatModal] = useState(false);
-  const [newChatPhone, setNewChatPhone] = useState('');
-  const [newChatName, setNewChatName] = useState('');
-  const [newChatInitialMsg, setNewChatInitialMsg] = useState('Hi! Thank you for contacting M Square Professionals.');
-
-  const messagesEndRef = useRef(null);
-
-  // Workload balancer: auto-assign incoming chats to the agent with the lowest open workload
-  const getLeastLoadedAgent = (currentConvs) => {
-    const branchAgents = usersList.filter(u => u.branch_id === activeBranchId && u.role_id === 'AGENT');
-    if (branchAgents.length === 0) {
-      return { id: 'alpha_employee', full_name: 'Diya Patel (Helpdesk Specialist)', role_id: 'AGENT' };
+  // Helper date formatter
+  const formatTime = (isoString) => {
+    if (!isoString) return '';
+    const d = new Date(isoString);
+    const now = new Date();
+    if (d.toDateString() === now.toDateString()) {
+      return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     }
-    const counts = {};
-    branchAgents.forEach(a => { counts[a.id] = 0; });
-    (currentConvs || []).forEach(c => {
-      if (c.status !== 'resolved' && counts[c.assignedUserId] !== undefined) {
-        counts[c.assignedUserId]++;
-      }
-    });
-    const sorted = [...branchAgents].sort((a, b) => (counts[a.id] || 0) - (counts[b.id] || 0));
-    return sorted[0];
+    return d.toLocaleDateString([], { month: 'short', day: 'numeric' });
   };
 
-  // Filter conversations with strict agent isolation
-  const filteredConversations = conversations.filter(c => {
-    // 1. Strict Agent Isolation: Non-lead employees can ONLY see chats assigned to them in their branch
-    if (!isBranchLead && user) {
-      const isAssigned = c.assignedUserId === user.id || c.assignedTo === user.full_name;
-      const isCurrentBranch = !c.branchId || c.branchId === activeBranchId;
-      if (!isAssigned || !isCurrentBranch) return false;
-    }
+  const formatClock = (iso) =>
+    iso ? new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
 
-    // 2. Branch Lead: Filter by Agent
-    if (isBranchLead && agentFilter !== 'all') {
-      if (c.assignedUserId !== agentFilter && c.assignedTo !== agentFilter) return false;
-    }
-
-    // 3. Status/View filters
-    if (chatFilter === 'mine' && user) {
-      if (c.assignedUserId !== user.id && c.assignedTo !== user.full_name) return false;
-    }
-    if (chatFilter === 'unread' && c.unreadCount === 0) return false;
-    if (chatFilter === 'resolved' && c.status !== 'resolved') return false;
-
-    // 4. Search query
-    if (searchQuery) {
-      const q = searchQuery.toLowerCase();
-      return (
-        c.customerName.toLowerCase().includes(q) ||
-        c.customerPhone.includes(q) ||
-        c.lastMessage.toLowerCase().includes(q)
-      );
-    }
-    return true;
-  });
-
-  // Selected conversation must strictly come from filtered list to preserve agent privacy
-  const selectedConv = filteredConversations.find(c => c.id === selectedConvId) || filteredConversations[0] || null;
-
-  // Auto-scroll messages to bottom
-  useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [selectedConv?.messages]);
-
-  // Theme switcher
-  const toggleTheme = () => {
-    const nextTheme = theme === 'dark' ? 'light' : 'dark';
-    setTheme(nextTheme);
-    localStorage.setItem('theme', nextTheme);
-    document.documentElement.setAttribute('data-bs-theme', nextTheme);
-    document.documentElement.setAttribute('data-theme', nextTheme);
+  const formatDay = (iso) => {
+    const d = new Date(iso);
+    const diff = Math.round((new Date().setHours(0, 0, 0, 0) - new Date(d).setHours(0, 0, 0, 0)) / 864e5);
+    if (diff === 0) return 'Today';
+    if (diff === 1) return 'Yesterday';
+    return d.toLocaleDateString([], { day: 'numeric', month: 'long', year: 'numeric' });
   };
 
-  // Set default theme on mount
-  useEffect(() => {
-    document.documentElement.setAttribute('data-bs-theme', theme);
-    document.documentElement.setAttribute('data-theme', theme);
-  }, [theme]);
+  // Helper file size formatter
+  const formatFileSize = (bytes) => {
+    if (!bytes) return '';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
 
-  // Fetch WhatsApp session status
-  const checkWhatsAppStatus = async () => {
+  // 1. Load Accounts
+  const fetchAccounts = async () => {
     try {
-      const res = await fetch(`/api/whatsapp/status?tenantId=${activeTenantId}&branchId=${activeBranchId}`);
+      const res = await fetch('/api/accounts');
       const json = await res.json();
-      if (json.success && json.data) {
-        setWaStatus(json.data.status);
-        setWaPhone(json.data.phone);
-        if (json.data.qrDataUrl) {
-          setWaQrDataUrl(json.data.qrDataUrl);
+      if (json.success) {
+        setAccounts(json.data);
+        if (qrModalAccount) {
+          const updated = json.data.find(a => a.id === qrModalAccount.id);
+          if (updated) setQrModalAccount(updated);
         }
       }
-    } catch (e) {
-      console.warn('Status check warning:', e.message);
+    } catch (err) {
+      console.error('Failed to fetch accounts:', err);
+    } finally {
+      setLoadingAccounts(false);
     }
   };
 
-  // Connect WhatsApp session & load QR (Only Branch Lead)
-  const handleConnectWhatsApp = async () => {
-    if (!isBranchLead) {
-      alert('Access Restricted: Only Branch Lead can connect or refresh the WhatsApp session.');
-      return;
-    }
-    setQrLoading(true);
-    setShowQrModal(true);
+  // 2. Load Chats
+  const fetchChats = async () => {
     try {
-      const res = await fetch('/api/whatsapp/connect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tenantId: activeTenantId, branchId: activeBranchId })
-      });
+      const url = selectedAccountId && selectedAccountId !== 'all'
+        ? `/api/chats?accountId=${encodeURIComponent(selectedAccountId)}`
+        : '/api/chats';
+      const res = await fetch(url);
       const json = await res.json();
-      if (json.data?.qrDataUrl) {
-        setWaQrDataUrl(json.data.qrDataUrl);
+      if (json.success) {
+        setChats(json.data);
       }
-      setWaStatus(json.data?.status || 'SCAN_QR');
     } catch (err) {
-      console.error('Failed to initialize WhatsApp:', err);
-    } finally {
-      setQrLoading(false);
+      console.error('Failed to fetch chats:', err);
     }
   };
 
-  // Force Refresh WhatsApp Session (Only Branch Lead)
-  const handleRefreshWhatsApp = async () => {
-    if (!isBranchLead) {
-      alert('Access Restricted: Only Branch Lead can refresh the WhatsApp session.');
-      return;
-    }
-    setQrLoading(true);
-    setShowQrModal(true);
-    try {
-      const res = await fetch('/api/whatsapp/reconnect', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tenantId: activeTenantId, branchId: activeBranchId })
-      });
-      const json = await res.json();
-      if (json.data?.qrDataUrl) {
-        setWaQrDataUrl(json.data.qrDataUrl);
-      }
-      setWaStatus('SCAN_QR');
-    } catch (err) {
-      console.error('Failed to reconnect WhatsApp:', err);
-    } finally {
-      setQrLoading(false);
-    }
-  };
-
-  // Load live branches, users, and message history from Express API
-  const refreshData = async () => {
-    setIsSyncing(true);
-    try {
-      const headers = { Authorization: `Bearer ${token}` };
-      const [bRes, uRes, mRes] = await Promise.all([
-        fetch('/api/branches', { headers }).then(r => r.json()).catch(() => ({})),
-        fetch('/api/users', { headers }).then(r => r.json()).catch(() => ({})),
-        fetch(`/api/whatsapp/messages?tenantId=${activeTenantId}&branchId=${activeBranchId}`).then(r => r.json()).catch(() => ({}))
-      ]);
-      if (bRes.success) setBranches(bRes.data || []);
-      if (uRes.success) setUsersList(uRes.data || []);
-
-      // If backend has real messages, reconstruct conversations
-      if (mRes.success && Array.isArray(mRes.data) && mRes.data.length > 0) {
-        setConversations(prev => {
-          if (prev.length > 0) return prev; // Do not overwrite active state
-          const map = new Map();
-          const sorted = [...mRes.data].reverse();
-          for (const msg of sorted) {
-            const digits = cleanPhoneDigits(msg.customerPhone || msg.remoteJid);
-            if (!digits) continue;
-            // Filter out empty messages and internal WhatsApp self-device syncs
-            if (!msg.text || !msg.text.trim()) continue;
-            if (digits === '141382521979108' || (msg.remoteJid && msg.remoteJid.endsWith('@lid') && msg.fromMe)) continue;
-            const cPhone = `+${digits}`;
-            const dPhone = formatDisplayPhone(digits);
-            if (!map.has(digits)) {
-              const displayName = msg.pushName ? `${msg.pushName} (${dPhone})` : `Customer (${dPhone})`;
-              const branchAgents = (uRes.data || []).filter(u => u.branch_id === activeBranchId && u.role_id === 'AGENT');
-              const assignedAgent = branchAgents.length > 0
-                ? branchAgents[map.size % branchAgents.length]
-                : { id: 'alpha_employee', full_name: 'Diya Patel (Helpdesk Specialist)' };
-              map.set(digits, {
-                id: 'conv-' + digits,
-                customerName: displayName,
-                customerPhone: cPhone,
-                remoteJid: msg.remoteJid || null,
-                branchName: 'Greater Noida Hub',
-                branchId: activeBranchId,
-                status: 'open',
-                assignedTo: assignedAgent.full_name,
-                assignedUserId: assignedAgent.id,
-                unreadCount: 0,
-                lastMessage: msg.text || '',
-                lastMessageTime: new Date(msg.timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                messages: [],
-                leadInfo: {
-                  stage: 'WhatsApp Inbound',
-                  tags: ['Live WhatsApp'],
-                  budget: 'TBD',
-                  internalNote: `Live WhatsApp conversation assigned to ${assignedAgent.full_name}.`
-                }
-              });
-            }
-            const conv = map.get(digits);
-            conv.lastMessage = msg.text || '';
-            conv.lastMessageTime = new Date(msg.timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-            if (!conv.messages.some(m => m.id === msg.messageId)) {
-              conv.messages.push({
-                id: msg.messageId || 'm-' + Date.now(),
-                fromMe: msg.fromMe || false,
-                text: msg.text || '',
-                time: new Date(msg.timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-                status: 'delivered'
-              });
-            }
-          }
-          const loaded = Array.from(map.values());
-          if (loaded.length > 0 && !selectedConvId) {
-            setSelectedConvId(loaded[0].id);
-          }
-          return loaded;
-        });
-      }
-
-      await checkWhatsAppStatus();
-    } catch (err) {
-      console.error('Error refreshing backend data:', err);
-    } finally {
-      setTimeout(() => setIsSyncing(false), 400);
-    }
-  };
-
-  useEffect(() => {
-    refreshData();
-  }, [token]);
-
-  // Real-Time Server-Sent Events (SSE) Listener for live QR & real WhatsApp messages
-  useEffect(() => {
-    const sseUrl = `/api/whatsapp/events?tenantId=${activeTenantId}&branchId=${activeBranchId}`;
-    const es = new EventSource(sseUrl);
-
-    es.addEventListener('qr', (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        if (data.qrDataUrl) {
-          setWaQrDataUrl(data.qrDataUrl);
-          setWaStatus('SCAN_QR');
-        }
-      } catch (err) {}
-    });
-
-    es.addEventListener('status', (e) => {
-      try {
-        const data = JSON.parse(e.data);
-        setWaStatus(data.status);
-        if (data.phone) setWaPhone(data.phone);
-        if (data.status === 'CONNECTED') {
-          setWaQrDataUrl(null);
-        }
-      } catch (err) {}
-    });
-
-    es.addEventListener('message', (e) => {
-      try {
-        const msg = JSON.parse(e.data);
-        const incomingDigits = cleanPhoneDigits(msg.customerPhone || msg.remoteJid);
-        const incomingText = msg.text || '';
-        // Completely ignore empty messages and internal self-device frames
-        if (!incomingText.trim()) return;
-        if (incomingDigits === '141382521979108' || (msg.remoteJid && msg.remoteJid.endsWith('@lid') && msg.fromMe)) return;
-
-        const canonicalPhone = `+${incomingDigits}`;
-        const displayPhone = formatDisplayPhone(incomingDigits);
-
-        // Auto-assign chat to branch agent (e.g., Diya Patel)
-        const branchAgent = usersList.find(u => u.branch_id === activeBranchId && u.role_id === 'AGENT')
-          || usersList.find(u => u.role_id === 'AGENT')
-          || { full_name: 'Diya Patel (Helpdesk Specialist)', id: 'alpha_employee' };
-
-        setConversations(prev => {
-          const existing = prev.find(c => cleanPhoneDigits(c.customerPhone) === incomingDigits);
-          const newMsgObj = {
-            id: msg.messageId || 'm-' + Date.now(),
-            fromMe: msg.fromMe || false,
-            text: incomingText,
-            time: new Date(msg.timestamp || Date.now()).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-            status: 'delivered'
-          };
-
-          if (existing) {
-            // Deduplication: reconcile optimistic messages with real Baileys echo to prevent double bubbles
-            const isDuplicate = existing.messages.some(m =>
-              m.id === newMsgObj.id ||
-              (m.fromMe && newMsgObj.fromMe && m.text === newMsgObj.text)
-            );
-
-            if (isDuplicate) {
-              return prev.map(c => {
-                if (c.id === existing.id) {
-                  return {
-                    ...c,
-                    remoteJid: c.remoteJid || msg.remoteJid,
-                    customerName: (msg.pushName && c.customerName.startsWith('Customer (')) ? `${msg.pushName} (${displayPhone})` : c.customerName,
-                    messages: c.messages.map(m =>
-                      (m.id === newMsgObj.id || (m.fromMe && newMsgObj.fromMe && m.text === newMsgObj.text))
-                        ? { ...m, id: newMsgObj.id, status: 'delivered' }
-                        : m
-                    )
-                  };
-                }
-                return c;
-              });
-            }
-
-            return prev.map(c => {
-              if (c.id === existing.id) {
-                return {
-                  ...c,
-                  remoteJid: c.remoteJid || msg.remoteJid,
-                  customerName: (msg.pushName && c.customerName.startsWith('Customer (')) ? `${msg.pushName} (${displayPhone})` : c.customerName,
-                  lastMessage: incomingText,
-                  lastMessageTime: 'Just now',
-                  unreadCount: (!msg.fromMe && c.id !== selectedConvId) ? c.unreadCount + 1 : c.unreadCount,
-                  messages: [...c.messages, newMsgObj]
-                };
-              }
-              return c;
-            });
-          } else {
-            // New incoming customer conversation: auto-assign via workload balancer across branch agents!
-            const assignedAgent = getLeastLoadedAgent(prev);
-            const displayName = msg.pushName ? `${msg.pushName} (${displayPhone})` : `Customer (${displayPhone})`;
-            const newConv = {
-              id: 'conv-' + incomingDigits,
-              customerName: displayName,
-              customerPhone: canonicalPhone,
-              remoteJid: msg.remoteJid || null,
-              branchName: 'Greater Noida Hub',
-              branchId: activeBranchId,
-              status: 'open',
-              assignedTo: assignedAgent.full_name,
-              assignedUserId: assignedAgent.id,
-              unreadCount: msg.fromMe ? 0 : 1,
-              lastMessage: incomingText,
-              lastMessageTime: 'Just now',
-              messages: [newMsgObj],
-              leadInfo: {
-                stage: 'New Inquiry',
-                tags: ['Live WhatsApp', 'Inbound'],
-                budget: 'TBD',
-                internalNote: `Incoming customer inquiry auto-assigned to ${assignedAgent.full_name}.`
-              }
-            };
-
-            // Auto-select conversation if none active
-            setSelectedConvId(prevId => prevId || newConv.id);
-            return [newConv, ...prev];
-          }
-        });
-      } catch (err) {
-        console.error('Error handling SSE message event:', err);
-      }
-    });
-
-    return () => es.close();
-  }, [activeTenantId, activeBranchId, selectedConvId, usersList]);
-
-  // Lead only: Reassign conversation to another employee in the SAME branch
-  const handleAssignAgent = (convId, agent) => {
-    if (!isBranchLead) {
-      alert('Access Restricted: Only Branch Lead can reassign chats within this branch.');
-      return;
-    }
-    setConversations(prev => prev.map(c => {
-      if (c.id === convId) {
-        return {
-          ...c,
-          assignedTo: agent.full_name,
-          assignedUserId: agent.id,
-          leadInfo: {
-            ...c.leadInfo,
-            internalNote: `${c.leadInfo?.internalNote || ''}\n[Reassigned to ${agent.full_name} by Branch Lead at ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}]`.trim()
-          }
-        };
-      }
-      return c;
-    }));
-    setTransferNotice(`Chat reassigned to ${agent.full_name}`);
-    setTimeout(() => setTransferNotice(''), 3500);
-  };
-
-  // Transfer conversation to ANOTHER branch (Allowed for both Lead and Regular Agent)
-  const handleTransferBranch = (convId, targetBranch) => {
-    if (targetBranch.id === activeBranchId) {
-      alert('Please select a different branch to transfer.');
-      return;
-    }
-    setConversations(prev => prev.map(c => {
-      if (c.id === convId) {
-        return {
-          ...c,
-          branchId: targetBranch.id,
-          branchName: targetBranch.name,
-          assignedTo: `Transferred (${targetBranch.name} Queue)`,
-          assignedUserId: null,
-          leadInfo: {
-            ...c.leadInfo,
-            stage: 'Transferred Branch',
-            internalNote: `${c.leadInfo?.internalNote || ''}\n[Transferred to ${targetBranch.name} by ${user?.full_name || 'Agent'} at ${new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}]`.trim()
-          }
-        };
-      }
-      return c;
-    }));
-    setTransferNotice(`Chat successfully transferred to ${targetBranch.name}`);
-    setTimeout(() => setTransferNotice(''), 4000);
-  };
-
-  // Delete / Remove a conversation
-  const handleDeleteConversation = async (convId, e) => {
-    e?.stopPropagation();
-    const conv = conversations.find(c => c.id === convId);
-    if (!conv) return;
-
-    if (!window.confirm(`Are you sure you want to remove the conversation with ${conv.customerName}?`)) {
-      return;
-    }
-
-    setConversations(prev => prev.filter(c => c.id !== convId));
-    if (selectedConvId === convId) {
-      setSelectedConvId(null);
-    }
-
-    try {
-      await fetch(`/api/whatsapp/messages?tenantId=${activeTenantId}&branchId=${activeBranchId}&phone=${encodeURIComponent(conv.customerPhone)}`, {
-        method: 'DELETE'
-      });
-    } catch (err) {}
-
-    setTransferNotice(`Removed conversation with ${conv.customerName}`);
-    setTimeout(() => setTransferNotice(''), 3000);
-  };
-
-  // Send WhatsApp message back to customer
-  const handleSendMessage = async (e) => {
-    e?.preventDefault();
-    if (!replyText.trim() || !selectedConv) return;
-
+  // 3. Load Messages for Selected Chat
+  const fetchMessages = async (chat) => {
+    if (!chat) return;
+    setLoadingMessages(true);
     setSendError('');
-    const messageText = replyText.trim();
-    setReplyText('');
-    setIsSending(true);
-
-    const newMsgId = 'm-' + Date.now();
-    const newMsg = {
-      id: newMsgId,
-      fromMe: true,
-      text: messageText,
-      time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-      status: 'sending'
-    };
-
-    // Optimistically update conversation
-    setConversations(prev => prev.map(c => {
-      if (c.id === selectedConv.id) {
-        return {
-          ...c,
-          lastMessage: messageText,
-          lastMessageTime: 'Just now',
-          messages: [...c.messages, newMsg]
-        };
-      }
-      return c;
-    }));
-
-    // Trigger backend WhatsApp connector dispatch to real customer phone
     try {
-      const cleanTargetPhone = cleanPhoneDigits(selectedConv.customerPhone);
-      const targetDestination = selectedConv.remoteJid || (cleanTargetPhone ? `+${cleanTargetPhone}` : selectedConv.customerPhone);
-      if (!targetDestination) {
-        throw new Error('Destination phone number or WhatsApp JID is invalid.');
+      const url = `/api/chats/messages?accountId=${encodeURIComponent(chat.accountId)}&remoteJid=${encodeURIComponent(chat.remoteJid)}`;
+      const res = await fetch(url);
+      const json = await res.json();
+      if (json.success) {
+        setMessages(json.data);
       }
+    } catch (err) {
+      console.error('Failed to fetch messages:', err);
+    } finally {
+      setLoadingMessages(false);
+    }
+  };
 
-      const res = await fetch('/api/whatsapp/send', {
+  // 4. Trigger Mobile Sync
+  const handleSyncWithPhone = async () => {
+    setIsManualSyncing(true);
+    try {
+      const targetAccountId = selectedChat?.accountId || (selectedAccountId !== 'all' ? selectedAccountId : null);
+      await fetch('/api/chats/sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          tenantId: activeTenantId,
-          branchId: activeBranchId,
-          to: targetDestination,
-          remoteJid: selectedConv.remoteJid || null,
-          text: messageText
+          accountId: targetAccountId,
+          remoteJid: selectedChat?.remoteJid || null
         })
       });
-      const data = await res.json();
-      if (!data.success) {
-        const errMsg = data.error || 'Failed to dispatch via WhatsApp';
-        setSendError(errMsg);
-        // Mark message status as failed
-        setConversations(prev => prev.map(c => {
-          if (c.id === selectedConv.id) {
+      await fetchChats();
+      if (selectedChat) await fetchMessages(selectedChat);
+      setSyncNotice('Phone chats synchronized');
+      setTimeout(() => setSyncNotice(''), 4000);
+    } catch (err) {
+      console.error('Sync failed:', err);
+    } finally {
+      setIsManualSyncing(false);
+    }
+  };
+
+  // Auto-scroll messages
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
+
+  // Initial load
+  useEffect(() => {
+    fetchAccounts();
+  }, []);
+
+  // Reload chats when account filter changes
+  useEffect(() => {
+    fetchChats();
+  }, [selectedAccountId]);
+
+  // Auto-poll QR status while QR modal is active to ensure instant display
+  useEffect(() => {
+    if (!showAccountsModal || !qrModalAccount || qrModalAccount.status === 'CONNECTED') {
+      return;
+    }
+
+    const interval = setInterval(async () => {
+      try {
+        const res = await fetch(`/api/accounts/${qrModalAccount.id}/status`);
+        const json = await res.json();
+        if (json.success && json.data) {
+          setQrModalAccount(prev => {
+            if (!prev || prev.id !== json.data.id) return prev;
             return {
-              ...c,
-              messages: c.messages.map(m => m.id === newMsgId ? { ...m, status: 'failed' } : m)
+              ...prev,
+              ...json.data
+            };
+          });
+
+          setAccounts(prev => prev.map(a => (a.id === json.data.id ? { ...a, ...json.data } : a)));
+        }
+      } catch (err) {}
+    }, 1500);
+
+    return () => clearInterval(interval);
+  }, [showAccountsModal, qrModalAccount?.id, qrModalAccount?.status]);
+
+  // Reload messages when selected chat changes
+  useEffect(() => {
+    if (selectedChat) {
+      fetchMessages(selectedChat);
+      clearAttachment();
+    } else {
+      setMessages([]);
+    }
+  }, [selectedChat]);
+
+  // 5. Real-time SSE listener
+  useEffect(() => {
+    const sse = new EventSource('/api/events');
+
+    sse.addEventListener('status', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        setAccounts(prev => prev.map(acc => {
+          if (acc.id === data.accountId) {
+            return {
+              ...acc,
+              status: data.status,
+              phone: data.phone || acc.phone,
+              name: data.name || acc.name,
+              lastError: data.error || null,
+              qrDataUrl: data.qrDataUrl !== undefined ? data.qrDataUrl : acc.qrDataUrl
             };
           }
-          return c;
+          return acc;
         }));
+
+        setQrModalAccount(prev => {
+          if (prev && prev.id === data.accountId) {
+            return {
+              ...prev,
+              status: data.status,
+              phone: data.phone || prev.phone,
+              lastError: data.error || null,
+              qrDataUrl: data.qrDataUrl !== undefined ? data.qrDataUrl : prev.qrDataUrl
+            };
+          }
+          return prev;
+        });
+      } catch (err) {}
+    });
+
+    sse.addEventListener('qr', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        setAccounts(prev => prev.map(acc => {
+          if (acc.id === data.accountId) {
+            return { ...acc, status: 'SCAN_QR', qrDataUrl: data.qrDataUrl };
+          }
+          return acc;
+        }));
+        setQrModalAccount(prev => {
+          if (prev && prev.id === data.accountId) {
+            return { ...prev, status: 'SCAN_QR', qrDataUrl: data.qrDataUrl };
+          }
+          return prev;
+        });
+      } catch (err) {}
+    });
+
+    // Handle real-time incoming or phone-sent messages
+    sse.addEventListener('message', (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        fetchChats();
+
+        setSelectedChat(currentChat => {
+          if (currentChat && currentChat.accountId === msg.accountId && currentChat.remoteJid === msg.remoteJid) {
+            setMessages(prev => {
+              const idx = prev.findIndex(m => m.id === msg.id);
+              if (idx !== -1) {
+                const updated = [...prev];
+                updated[idx] = msg;
+                return updated;
+              }
+              return [...prev, msg];
+            });
+          }
+          return currentChat;
+        });
+      } catch (err) {}
+    });
+
+    // Handle full history sync from phone
+    sse.addEventListener('history_synced', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        setSyncNotice(`Synced ${data.chatsCount || 0} chats from mobile phone`);
+        setTimeout(() => setSyncNotice(''), 5000);
+        fetchChats();
+        if (selectedChat) fetchMessages(selectedChat);
+      } catch (err) {}
+    });
+
+    // Handle chat updates from phone (e.g. read status, new chats)
+    sse.addEventListener('chats_updated', () => {
+      fetchChats();
+    });
+
+    return () => {
+      sse.close();
+    };
+  }, []);
+
+  // Handle file selection for sharing images/videos
+  const handleFileSelect = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (file.size > 50 * 1024 * 1024) {
+      alert('Selected file exceeds maximum allowed size (50MB). Please select a smaller file.');
+      return;
+    }
+
+    setSelectedFile(file);
+
+    const reader = new FileReader();
+    reader.onload = () => {
+      setFileBase64(reader.result);
+      if (file.type.startsWith('image/')) {
+        setFilePreviewUrl(reader.result);
       } else {
-        // Mark as delivered and reconcile real WhatsApp messageId
-        const realId = data.data?.messageId || newMsgId;
-        setConversations(prev => prev.map(c => {
-          if (c.id === selectedConv.id) {
-            return {
-              ...c,
-              messages: c.messages.map(m => m.id === newMsgId ? { ...m, id: realId, status: 'delivered' } : m)
-            };
-          }
-          return c;
-        }));
+        setFilePreviewUrl(null);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const clearAttachment = () => {
+    setSelectedFile(null);
+    setFilePreviewUrl(null);
+    setFileBase64(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const getMediaTypeFromFile = (file) => {
+    if (!file) return 'document';
+    if (file.type.startsWith('image/')) return 'image';
+    if (file.type.startsWith('video/')) return 'video';
+    if (file.type.startsWith('audio/')) return 'audio';
+    return 'document';
+  };
+
+  // 6. Send Message (Text or Media)
+  const handleSendMessage = async (e) => {
+    e?.preventDefault();
+    if (!selectedChat) return;
+
+    const hasText = replyText.trim().length > 0;
+    const hasMedia = Boolean(selectedFile && fileBase64);
+
+    if (!hasText && !hasMedia) return;
+
+    setIsSending(true);
+    setSendError('');
+
+    try {
+      if (hasMedia) {
+        const mediaType = getMediaTypeFromFile(selectedFile);
+        const res = await fetch('/api/messages/send-media', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            accountId: selectedChat.accountId,
+            remoteJid: selectedChat.remoteJid,
+            to: selectedChat.customerPhone,
+            mediaBase64: fileBase64,
+            mediaType,
+            mimetype: selectedFile.type,
+            fileName: selectedFile.name,
+            caption: replyText.trim()
+          })
+        });
+
+        const json = await res.json();
+        if (!json.success) {
+          throw new Error(json.error || 'Failed to send media');
+        }
+
+        clearAttachment();
+        setReplyText('');
+        fetchChats();
+      } else {
+        const res = await fetch('/api/messages/send', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            accountId: selectedChat.accountId,
+            remoteJid: selectedChat.remoteJid,
+            to: selectedChat.customerPhone,
+            text: replyText.trim()
+          })
+        });
+
+        const json = await res.json();
+        if (!json.success) {
+          throw new Error(json.error || 'Failed to send message');
+        }
+
+        setReplyText('');
+        fetchChats();
       }
     } catch (err) {
-      setSendError(err.message || 'Network error sending WhatsApp message');
-      setConversations(prev => prev.map(c => {
-        if (c.id === selectedConv.id) {
-          return {
-            ...c,
-            messages: c.messages.map(m => m.id === newMsgId ? { ...m, status: 'failed' } : m)
-          };
-        }
-        return c;
-      }));
+      setSendError(err.message);
     } finally {
       setIsSending(false);
     }
   };
 
-  // Start a new chat with a real customer phone number
-  const handleStartNewRealChat = async (e) => {
+  // 7. Create Account & Open QR
+  const handleCreateAccount = async (e) => {
     e?.preventDefault();
-    if (!newChatPhone.trim()) return;
+    if (!newAccountName.trim()) return;
 
-    const digits = cleanPhoneDigits(newChatPhone);
-    if (!digits) {
-      alert('Please enter a valid phone number with country code (e.g. 919053229254)');
+    setIsCreatingAccount(true);
+    try {
+      const res = await fetch('/api/accounts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newAccountName.trim() })
+      });
+      const json = await res.json();
+      if (json.success) {
+        setNewAccountName('');
+        await fetchAccounts();
+        setQrModalAccount(json.data);
+      }
+    } catch (err) {
+      alert('Error creating account: ' + err.message);
+    } finally {
+      setIsCreatingAccount(false);
+    }
+  };
+
+  const handleConnectAccount = async (accId) => {
+    try {
+      const acc = accounts.find(a => a.id === accId);
+      if (acc) setQrModalAccount(acc);
+      await fetch(`/api/accounts/${accId}/connect`, { method: 'POST' });
+      fetchAccounts();
+    } catch (err) {
+      alert('Failed to connect: ' + err.message);
+    }
+  };
+
+  const handleDisconnectAccount = async (accId, logout = false) => {
+    if (!confirm(logout ? 'Are you sure you want to unlink and log out this WhatsApp account?' : 'Disconnect session?')) return;
+    try {
+      await fetch(`/api/accounts/${accId}/disconnect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ logout })
+      });
+      fetchAccounts();
+    } catch (err) {
+      alert('Failed to disconnect: ' + err.message);
+    }
+  };
+
+  const handleDeleteAccount = async (accId) => {
+    if (!confirm('Are you sure you want to permanently delete this account? All session credentials and message history will be removed.')) return;
+    try {
+      await fetch(`/api/accounts/${accId}`, { method: 'DELETE' });
+      if (selectedAccountId === accId) setSelectedAccountId('all');
+      if (selectedChat?.accountId === accId) setSelectedChat(null);
+      fetchAccounts();
+      fetchChats();
+    } catch (err) {
+      alert('Failed to delete account: ' + err.message);
+    }
+  };
+
+  // 8. Start New Chat
+  const handleStartNewChat = async (e) => {
+    e?.preventDefault();
+    if (!newChatAccountId) {
+      alert('Please select an account to send from');
+      return;
+    }
+    if (!newChatPhone.trim()) {
+      alert('Please enter a destination phone number');
       return;
     }
 
-    const canonicalPhone = `+${digits}`;
-    const displayPhone = formatDisplayPhone(digits);
-    const customerTitle = newChatName.trim() || `Customer (${displayPhone})`;
+    setIsStartingNewChat(true);
+    try {
+      const res = await fetch('/api/messages/send', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          accountId: newChatAccountId,
+          to: newChatPhone.trim(),
+          text: newChatText.trim()
+        })
+      });
+      const json = await res.json();
+      if (!json.success) {
+        throw new Error(json.error || 'Failed to send initial message');
+      }
 
-    // Check if conversation already exists
-    const existing = conversations.find(c => cleanPhoneDigits(c.customerPhone) === digits);
-    if (existing) {
-      setSelectedConvId(existing.id);
       setShowNewChatModal(false);
-      setMobileChatOpen(true);
-      return;
-    }
+      setNewChatPhone('');
+      await fetchChats();
 
-    const assignedAgent = (!isBranchLead && user)
-      ? { full_name: user.full_name, id: user.id }
-      : getLeastLoadedAgent(conversations);
-
-    const newConvId = 'conv-' + digits;
-    const newConv = {
-      id: newConvId,
-      customerName: customerTitle,
-      customerPhone: canonicalPhone,
-      branchName: 'Greater Noida Hub',
-      branchId: activeBranchId,
-      status: 'open',
-      assignedTo: assignedAgent.full_name,
-      assignedUserId: assignedAgent.id,
-      unreadCount: 0,
-      lastMessage: newChatInitialMsg || 'Conversation initiated',
-      lastMessageTime: 'Just now',
-      messages: newChatInitialMsg ? [
-        {
-          id: 'init-' + Date.now(),
-          fromMe: true,
-          text: newChatInitialMsg,
-          time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          status: 'sent'
-        }
-      ] : [],
-      leadInfo: {
-        stage: 'Direct Outbound',
-        tags: ['New Lead', 'WhatsApp CRM'],
-        budget: 'TBD',
-        internalNote: `Real chat initiated by ${user?.full_name || 'Team'}. Assigned to ${assignedAgent.full_name}.`
-      }
-    };
-
-    setConversations(prev => [newConv, ...prev]);
-    setSelectedConvId(newConvId);
-    setShowNewChatModal(false);
-    setMobileChatOpen(true);
-
-    // If initial text is provided, dispatch via WhatsApp
-    if (newChatInitialMsg) {
-      try {
-        await fetch('/api/whatsapp/send', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            tenantId: activeTenantId,
-            branchId: activeBranchId,
-            to: canonicalPhone,
-            text: newChatInitialMsg
-          })
-        });
-      } catch (e) {
-        // logged
-      }
-    }
-
-    setNewChatPhone('');
-    setNewChatName('');
-  };
-
-  // Change conversation status
-  const handleStatusChange = (newStatus) => {
-    setConversations(prev => prev.map(c => {
-      if (c.id === selectedConv?.id) {
-        return { ...c, status: newStatus };
-      }
-      return c;
-    }));
-  };
-
-  const getStatusBadge = (status) => {
-    switch (status) {
-      case 'open':
-        return <span className="badge badge-open">Open</span>;
-      case 'on_hold':
-        return <span className="badge badge-on_hold">On Hold</span>;
-      case 'resolved':
-        return <span className="badge badge-resolved">Resolved</span>;
-      case 'closed':
-        return <span className="badge badge-closed">Closed</span>;
-      default:
-        return <span className="badge bg-secondary">{status}</span>;
+      const account = accounts.find(a => a.id === newChatAccountId);
+      setSelectedChat({
+        id: `${newChatAccountId}:${json.data.remoteJid}`,
+        accountId: newChatAccountId,
+        accountName: account?.name || newChatAccountId,
+        accountPhone: account?.phone || null,
+        remoteJid: json.data.remoteJid,
+        customerPhone: json.data.customerPhone || newChatPhone.trim(),
+        customerName: ''
+      });
+    } catch (err) {
+      alert('Error starting chat: ' + err.message);
+    } finally {
+      setIsStartingNewChat(false);
     }
   };
+
+  const filteredChats = chats.filter(c => {
+    if (!searchQuery.trim()) return true;
+    const q = searchQuery.toLowerCase();
+    return (
+      (c.customerName && c.customerName.toLowerCase().includes(q)) ||
+      (c.customerPhone && c.customerPhone.toLowerCase().includes(q)) ||
+      (c.lastMessage && c.lastMessage.toLowerCase().includes(q)) ||
+      (c.accountName && c.accountName.toLowerCase().includes(q))
+    );
+  });
+
+  const connectedAccountsCount = accounts.filter(a => a.status === 'CONNECTED').length;
 
   return (
-    <div className="d-flex flex-column vh-100 overflow-hidden" style={{ backgroundColor: 'var(--bg-primary)' }}>
-      {/* 1. M Square Navbar */}
-      <nav className="navbar navbar-expand-lg msquare-navbar px-3">
-        <div className="container-fluid d-flex align-items-center justify-content-between px-0">
-          {/* Mobile Menu Toggle & Brand */}
+    <div className="wa-app">
+      {/* Top Navbar */}
+      <header className="navbar navbar-expand px-3 msquare-navbar">
+        <div className="container-fluid p-0 d-flex justify-content-between align-items-center">
           <div className="d-flex align-items-center gap-2">
-            <button
-              className="btn btn-sm btn-msquare-outline d-lg-none py-1 px-2"
-              onClick={() => setSidebarMobileOpen(!sidebarMobileOpen)}
-              title="Toggle Menu"
-            >
-              <i className="bi bi-list fs-5"></i>
-            </button>
-
-            <div className="msquare-logo-badge" title="M Square Professionals">
+            <div className="msquare-logo-badge" style={{ width: '38px', height: '38px', fontSize: '1.1rem' }}>
               <span>M²</span>
             </div>
-            <div className="msquare-brand-stacked">
-              <span className="brand-word-top">M SQUARE</span>
-              <span className="brand-word-bottom">PROFESSIONALS</span>
+            <div>
+              <span className="fw-bold" style={{ fontSize: '1.05rem', letterSpacing: '-0.3px' }}>WaCRM</span>
+              <span className="msquare-badge ms-2 d-none d-sm-inline-block">WhatsApp Helpdesk</span>
             </div>
-            <span className="msquare-helpdesk-badge ms-2 d-none d-md-inline-flex align-items-center gap-1">
-              <i className="bi bi-whatsapp text-success fs-6"></i>
-              <span>WhatsApp Helpdesk</span>
-            </span>
           </div>
 
-          {/* Right Action Bar */}
-          <div className="d-flex align-items-center gap-2 gap-sm-3">
-            {/* Live WhatsApp Status Badge */}
-            <div className="d-flex align-items-center">
-              {waStatus === 'CONNECTED' ? (
-                <span className="badge bg-success-subtle text-success py-1.5 px-2.5 d-flex align-items-center gap-1">
-                  <i className="bi bi-check-circle-fill"></i>
-                  <span className="d-none d-sm-inline">WhatsApp: {waPhone ? `+${waPhone}` : 'Connected'}</span>
-                </span>
-              ) : isBranchLead ? (
-                <button
-                  type="button"
-                  className="btn btn-sm btn-msquare-primary py-1 px-2 d-flex align-items-center gap-1"
-                  onClick={handleConnectWhatsApp}
-                  title="Connect or Pair WhatsApp (Branch Lead only)"
-                >
-                  <i className="bi bi-qr-code"></i>
-                  <span className="d-none d-sm-inline">{waStatus === 'SCAN_QR' ? 'Scan QR' : 'WhatsApp Connect'}</span>
-                </button>
-              ) : (
-                <span className="badge bg-secondary-subtle text-muted py-1.5 px-2.5 small d-flex align-items-center gap-1">
-                  <i className="bi bi-circle-fill text-secondary" style={{ fontSize: '0.45rem' }}></i>
-                  <span className="d-none d-sm-inline">WhatsApp Offline</span>
-                </span>
-              )}
-            </div>
+          <div className="d-flex align-items-center gap-2">
+            {/* Sync notice toast */}
+            {syncNotice && (
+              <span className="badge bg-success-subtle text-success border border-success-subtle py-1 px-2 d-none d-md-inline-flex align-items-center gap-1 small">
+                <i className="bi bi-phone"></i>
+                {syncNotice}
+              </span>
+            )}
 
-            {/* Sync Button */}
+            {/* Manual Sync With Phone Button */}
             <button
-              type="button"
-              className="btn btn-sm btn-msquare-outline d-none d-sm-flex align-items-center gap-1"
-              onClick={refreshData}
-              title="Sync conversations with backend"
+              className="btn btn-sm btn-outline-primary d-flex align-items-center gap-1 py-1 px-2"
+              onClick={handleSyncWithPhone}
+              disabled={isManualSyncing || connectedAccountsCount === 0}
+              title="Sync latest chats and messages from mobile phone"
             >
-              <i className={`bi bi-arrow-repeat ${isSyncing ? 'text-warning spin' : 'text-success'}`}></i>
-              <span className="small">Sync</span>
+              <i className={`bi bi-arrow-clockwise ${isManualSyncing ? 'spin-icon' : ''}`}></i>
+              <span className="d-none d-lg-inline small">
+                {isManualSyncing ? 'Syncing...' : 'Sync Mobile'}
+              </span>
             </button>
 
-            {/* Theme Toggle Button */}
+            {/* Account Status Pill */}
             <button
-              type="button"
-              className="theme-toggle-btn"
-              onClick={toggleTheme}
-              title={`Switch to ${theme === 'dark' ? 'Light' : 'Dark'} Theme`}
+              className="btn btn-sm btn-outline-secondary d-flex align-items-center gap-2 py-1 px-2"
+              onClick={() => setShowAccountsModal(true)}
+              title="Manage WhatsApp Accounts"
             >
-              {theme === 'dark' ? (
-                <i className="bi bi-sun-fill text-warning fs-5"></i>
-              ) : (
-                <i className="bi bi-moon-stars-fill text-primary fs-5"></i>
-              )}
+              <i className="bi bi-whatsapp text-success fs-6"></i>
+              <span className="d-none d-md-inline small fw-semibold">
+                {connectedAccountsCount} of {accounts.length} Connected
+              </span>
+              <span className="badge bg-secondary rounded-pill">{accounts.length}</span>
             </button>
 
-            {/* User Profile Badge */}
-            <div className="d-none d-md-flex align-items-center gap-2 text-start">
-              <div
-                className="rounded-circle text-white d-flex align-items-center justify-content-center fw-bold"
-                style={{
-                  width: '32px',
-                  height: '32px',
-                  fontSize: '0.85rem',
-                  background: 'linear-gradient(135deg, var(--brand-orange), var(--brand-orange-hover))'
-                }}
-              >
-                {(user?.full_name?.charAt(0)) || 'A'}
-              </div>
-              <div className="text-truncate" style={{ maxWidth: '140px' }}>
-                <div className="fw-semibold lh-1 small text-body text-truncate">{user?.full_name}</div>
-                <div className="text-muted" style={{ fontSize: '0.7rem' }}>
-                  {user?.role_id === 'BRANCH_ADMIN' ? 'Branch Lead' : user?.role_id}
-                </div>
-              </div>
-            </div>
-
-            {/* Direct Logout Button */}
+            {/* Add Account Button */}
             <button
-              onClick={logout}
-              className="btn btn-sm btn-outline-danger d-flex align-items-center gap-1 py-1.5 px-2.5"
-              title="Sign Out"
+              className="btn btn-sm btn-msquare-primary d-flex align-items-center gap-1 py-1 px-3"
+              onClick={() => setShowAccountsModal(true)}
             >
-              <i className="bi bi-box-arrow-right"></i>
-              <span className="d-none d-sm-inline small fw-semibold">Sign Out</span>
+              <i className="bi bi-plus-lg"></i>
+              <span className="d-none d-sm-inline small">Add Account</span>
             </button>
           </div>
         </div>
-      </nav>
+      </header>
 
-      {/* 2. Main App Container */}
-      <div className="app-container position-relative">
-        {/* Mobile Backdrop */}
-        {sidebarMobileOpen && (
-          <div className="sidebar-backdrop" onClick={() => setSidebarMobileOpen(false)}></div>
-        )}
-
-        {/* Left Sidebar */}
-        <aside className={`app-sidebar py-3 ${sidebarMobileOpen ? 'sidebar-mobile-open' : ''}`}>
-          <div className="px-3 mb-2 small text-uppercase fw-bold text-muted" style={{ fontSize: '0.72rem', letterSpacing: '0.5px' }}>
-            Helpdesk Views
-          </div>
-          <div
-            className={`sidebar-nav-link ${activeView === 'inbox' && chatFilter === 'all' ? 'active' : ''}`}
-            onClick={() => { setActiveView('inbox'); setChatFilter('all'); setSidebarMobileOpen(false); }}
-          >
-            <i className="bi bi-chat-dots-fill"></i>
-            <span>All Inquiries</span>
-            <span className="badge bg-secondary-subtle text-secondary ms-auto">{conversations.length}</span>
-          </div>
-          <div
-            className={`sidebar-nav-link ${activeView === 'inbox' && chatFilter === 'mine' ? 'active' : ''}`}
-            onClick={() => { setActiveView('inbox'); setChatFilter('mine'); setSidebarMobileOpen(false); }}
-          >
-            <i className="bi bi-person-check-fill"></i>
-            <span>My Chats</span>
-            <span className="badge bg-warning-subtle text-warning ms-auto">
-              {conversations.filter(c => c.assignedUserId === user?.id || c.assignedTo === user?.full_name).length}
-            </span>
-          </div>
-          <div
-            className={`sidebar-nav-link ${activeView === 'inbox' && chatFilter === 'unread' ? 'active' : ''}`}
-            onClick={() => { setActiveView('inbox'); setChatFilter('unread'); setSidebarMobileOpen(false); }}
-          >
-            <i className="bi bi-envelope-open-fill"></i>
-            <span>Unread Queries</span>
-            <span className="badge bg-danger ms-auto">
-              {conversations.filter(c => c.unreadCount > 0).length}
-            </span>
-          </div>
-          <div
-            className={`sidebar-nav-link ${activeView === 'inbox' && chatFilter === 'resolved' ? 'active' : ''}`}
-            onClick={() => { setActiveView('inbox'); setChatFilter('resolved'); setSidebarMobileOpen(false); }}
-          >
-            <i className="bi bi-check-circle-fill text-success"></i>
-            <span>Resolved Queries</span>
-            <span className="badge bg-success-subtle text-success ms-auto">
-              {conversations.filter(c => c.status === 'resolved').length}
-            </span>
-          </div>
-
-          {isBranchLead && (
-            <>
-              <div className="px-3 mt-4 mb-2 small text-uppercase fw-bold text-muted" style={{ fontSize: '0.72rem', letterSpacing: '0.5px' }}>
-                Operations & WhatsApp
-              </div>
-              <div
-                className={`sidebar-nav-link ${activeView === 'channels' ? 'active' : ''}`}
-                onClick={() => { setActiveView('channels'); setSidebarMobileOpen(false); }}
-              >
-                <i className="bi bi-qr-code text-success"></i>
-                <span>WhatsApp Channel</span>
-                <span className="badge bg-success-subtle text-success ms-auto" style={{ fontSize: '0.68rem' }}>Lead Admin</span>
-              </div>
-              <div
-                className={`sidebar-nav-link ${activeView === 'branches' ? 'active' : ''}`}
-                onClick={() => { setActiveView('branches'); setSidebarMobileOpen(false); }}
-              >
-                <i className="bi bi-diagram-3-fill text-primary"></i>
-                <span>Branches & Roster</span>
-              </div>
-            </>
-          )}
-
-          {/* Quick Real Chat Button */}
-          <div className="px-3 mt-4">
-            <button
-              className="btn btn-msquare-primary w-100 py-2 small fw-semibold d-flex align-items-center justify-content-center gap-2"
-              onClick={() => { setShowNewChatModal(true); setSidebarMobileOpen(false); }}
-            >
-              <i className="bi bi-telephone-plus-fill"></i>
-              <span>+ New Real Chat</span>
-            </button>
-          </div>
-
-          {/* Switch Identity for testing */}
-          <div className="mt-auto px-3 pt-3 border-top" style={{ borderColor: 'var(--border-subtle)' }}>
-            <div className="small text-muted mb-1 fw-bold" style={{ fontSize: '0.72rem' }}>Role Switcher (Testing)</div>
-            <div className="d-flex flex-column gap-1">
-              <button
-                className={`btn btn-xs text-start py-1 px-2 rounded small ${user?.email === 'aarav@msquare.com' ? 'btn-warning' : 'btn-outline-secondary'}`}
-                style={{ fontSize: '0.74rem' }}
-                onClick={() => login('aarav@msquare.com')}
-                title="Branch Lead: Can see all chats, filter by agent, reassign to same branch, manage WhatsApp"
-              >
-                <i className="bi bi-shield-check me-1"></i> Aarav (Branch Lead)
-              </button>
-              <button
-                className={`btn btn-xs text-start py-1 px-2 rounded small ${user?.email === 'diya@msquare.com' ? 'btn-success' : 'btn-outline-secondary'}`}
-                style={{ fontSize: '0.74rem' }}
-                onClick={() => login('diya@msquare.com')}
-                title="Agent 1: Can only see own assigned chats, can only transfer to another branch"
-              >
-                <i className="bi bi-person me-1"></i> Diya (Agent 1)
-              </button>
-              <button
-                className={`btn btn-xs text-start py-1 px-2 rounded small ${user?.email === 'rohan@msquare.com' ? 'btn-success' : 'btn-outline-secondary'}`}
-                style={{ fontSize: '0.74rem' }}
-                onClick={() => login('rohan@msquare.com')}
-                title="Agent 2: Can only see own assigned chats, can only transfer to another branch"
-              >
-                <i className="bi bi-person me-1"></i> Rohan (Agent 2)
-              </button>
-              <button
-                className={`btn btn-xs text-start py-1 px-2 rounded small ${user?.email === 'kavita@msquare.com' ? 'btn-success' : 'btn-outline-secondary'}`}
-                style={{ fontSize: '0.74rem' }}
-                onClick={() => login('kavita@msquare.com')}
-                title="Agent 3: Can only see own assigned chats, can only transfer to another branch"
-              >
-                <i className="bi bi-person me-1"></i> Kavita (Agent 3)
-              </button>
-            </div>
-          </div>
-        </aside>
-
-        {/* 3. Center Content Area */}
-        {activeView === 'inbox' ? (
-          <div className={`d-flex flex-grow-1 overflow-hidden ${mobileChatOpen ? 'mobile-show-chat' : 'mobile-hide-chat'}`}>
-            {/* Column 1: Conversation List Pane */}
-            <div className="conversation-list-pane">
-              {/* Header with Search and New Real Chat button */}
-              <div className="p-3 border-bottom" style={{ borderColor: 'var(--border-subtle)' }}>
-                <div className="d-flex gap-2 mb-2">
-                  <div className="input-group flex-grow-1">
-                    <span className="input-group-text border-0" style={{ backgroundColor: 'var(--bg-input)', color: 'var(--text-muted)' }}>
-                      <i className="bi bi-search"></i>
-                    </span>
-                    <input
-                      type="text"
-                      className="form-control message-input form-control-sm"
-                      placeholder="Search phone, name..."
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                    />
-                  </div>
-                  <button
-                    className="btn btn-sm btn-msquare-primary text-nowrap px-2"
-                    onClick={() => setShowNewChatModal(true)}
-                    title="Send WhatsApp message to real phone number"
-                  >
-                    <i className="bi bi-plus-lg"></i>
-                  </button>
-                </div>
-
-                {/* Filter Pills */}
-                <div className="d-flex gap-1 overflow-x-auto pb-1 mb-2">
-                  <button
-                    className={`btn btn-sm ${chatFilter === 'all' ? 'btn-msquare-primary py-0 px-2' : 'btn-msquare-outline py-0 px-2'}`}
-                    onClick={() => setChatFilter('all')}
-                  >
-                    All ({conversations.length})
-                  </button>
-                  <button
-                    className={`btn btn-sm ${chatFilter === 'mine' ? 'btn-msquare-primary py-0 px-2' : 'btn-msquare-outline py-0 px-2'}`}
-                    onClick={() => setChatFilter('mine')}
-                  >
-                    Mine
-                  </button>
-                  <button
-                    className={`btn btn-sm ${chatFilter === 'unread' ? 'btn-msquare-primary py-0 px-2' : 'btn-msquare-outline py-0 px-2'}`}
-                    onClick={() => setChatFilter('unread')}
-                  >
-                    Unread
-                  </button>
-                  <button
-                    className={`btn btn-sm ${chatFilter === 'resolved' ? 'btn-msquare-primary py-0 px-2' : 'btn-msquare-outline py-0 px-2'}`}
-                    onClick={() => setChatFilter('resolved')}
-                  >
-                    Resolved
-                  </button>
-                </div>
-
-                {/* Branch Lead: Filter by Agent */}
-                {isBranchLead ? (
-                  <div className="pt-2 border-top" style={{ borderColor: 'var(--border-subtle)' }}>
-                    <div className="d-flex align-items-center justify-content-between mb-1">
-                      <span className="small text-muted fw-bold" style={{ fontSize: '0.72rem' }}>
-                        <i className="bi bi-funnel-fill text-warning me-1"></i> Filter by Agent (Lead):
-                      </span>
-                      {agentFilter !== 'all' && (
-                        <button
-                          className="btn btn-link btn-xs p-0 text-muted"
-                          style={{ fontSize: '0.7rem' }}
-                          onClick={() => setAgentFilter('all')}
-                        >
-                          Show All
-                        </button>
-                      )}
-                    </div>
-                    <select
-                      className="form-select form-select-sm message-input"
-                      style={{ fontSize: '0.78rem' }}
-                      value={agentFilter}
-                      onChange={(e) => setAgentFilter(e.target.value)}
-                    >
-                      <option value="all">👥 All Agents ({conversations.length} total)</option>
-                      {(usersList.length > 0 ? usersList.filter(u => u.branch_id === activeBranchId && u.role_id === 'AGENT') : [
-                        { id: 'alpha_employee', full_name: 'Diya Patel (Helpdesk Specialist)' },
-                        { id: 'alpha_agent_rohan', full_name: 'Rohan Mehta (Support Specialist)' },
-                        { id: 'alpha_agent_kavita', full_name: 'Kavita Sen (Customer Success)' }
-                      ]).map(agent => {
-                        const count = conversations.filter(c => c.assignedUserId === agent.id).length;
-                        return (
-                          <option key={agent.id} value={agent.id}>
-                            👤 {agent.full_name} ({count})
-                          </option>
-                        );
-                      })}
-                    </select>
-                  </div>
-                ) : (
-                  <div className="pt-2 border-top" style={{ borderColor: 'var(--border-subtle)' }}>
-                    <div className="py-1 px-2 rounded bg-body-tertiary border d-flex align-items-center justify-content-between">
-                      <span className="small text-muted" style={{ fontSize: '0.72rem' }}>
-                        <i className="bi bi-shield-lock-fill text-success me-1"></i> Isolated Inbox (Mine Only)
-                      </span>
-                      <span className="badge bg-success-subtle text-success small">{filteredConversations.length}</span>
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Conversations List */}
-              <div className="flex-grow-1 overflow-y-auto">
-                {filteredConversations.length === 0 ? (
-                  <div className="text-center py-5 text-muted small">
-                    <i className="bi bi-chat-square-text fs-2 d-block mb-2 text-secondary"></i>
-                    No conversations found.
-                    <div className="mt-2">
-                      <button
-                        className="btn btn-sm btn-msquare-outline"
-                        onClick={() => setShowNewChatModal(true)}
-                      >
-                        Start Real WhatsApp Chat
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  filteredConversations.map((c) => {
-                    const isSelected = selectedConv?.id === c.id;
-                    return (
-                      <div
-                        key={c.id}
-                        className={`conversation-item ${isSelected ? 'active' : ''}`}
-                        onClick={() => {
-                          setSelectedConvId(c.id);
-                          setMobileChatOpen(true);
-                        }}
-                      >
-                        <div className="d-flex justify-content-between align-items-start mb-1">
-                          <span className="fw-semibold text-truncate text-body" style={{ maxWidth: '170px' }}>
-                            {c.customerName}
-                          </span>
-                          <div className="d-flex align-items-center gap-1">
-                            <span className="text-muted small" style={{ fontSize: '0.72rem' }}>
-                              {c.lastMessageTime}
-                            </span>
-                            <button
-                              className="btn btn-xs btn-link text-muted p-0 ms-1 opacity-50 hover-opacity-100"
-                              title="Delete conversation"
-                              onClick={(e) => handleDeleteConversation(c.id, e)}
-                            >
-                              <i className="bi bi-x-circle text-danger" style={{ fontSize: '0.85rem' }}></i>
-                            </button>
-                          </div>
-                        </div>
-                        <div className="d-flex align-items-center gap-1 mb-1">
-                          <span className="badge bg-body-tertiary border text-body" style={{ fontSize: '0.68rem' }}>
-                            {formatDisplayPhone(c.customerPhone)}
-                          </span>
-                          {getStatusBadge(c.status)}
-                          {c.unreadCount > 0 && (
-                            <span className="badge bg-danger rounded-pill ms-auto" style={{ fontSize: '0.68rem' }}>
-                              {c.unreadCount}
-                            </span>
-                          )}
-                        </div>
-                        <p className="text-muted small mb-0 text-truncate" style={{ fontSize: '0.82rem' }}>
-                          {c.lastMessage}
-                        </p>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
-
-            {/* Column 2: Chat Detail Pane */}
-            <div className="chat-detail-pane">
-              {selectedConv ? (
-                <>
-                  {/* Chat Header */}
-                  <div
-                    className="d-flex justify-content-between align-items-center px-3 px-sm-4 py-2.5 border-bottom"
-                    style={{ backgroundColor: 'var(--bg-card)', borderColor: 'var(--border-subtle)' }}
-                  >
-                    <div className="d-flex align-items-center gap-2 gap-sm-3">
-                      {/* Mobile Back Button */}
-                      <button
-                        className="btn btn-sm btn-outline-secondary d-md-none py-1 px-2"
-                        onClick={() => setMobileChatOpen(false)}
-                        title="Back to inquiries list"
-                      >
-                        <i className="bi bi-chevron-left"></i>
-                      </button>
-
-                      <div
-                        className="rounded-circle text-white d-flex align-items-center justify-content-center fw-bold flex-shrink-0"
-                        style={{
-                          width: '38px',
-                          height: '38px',
-                          background: 'linear-gradient(135deg, var(--brand-blue), var(--brand-blue-hover))'
-                        }}
-                      >
-                        {selectedConv.customerName.charAt(0)}
-                      </div>
-                      <div className="text-truncate">
-                        <div className="fw-bold mb-0 text-body d-flex align-items-center gap-2 text-truncate">
-                          <span className="text-truncate">{selectedConv.customerName}</span>
-                          <span className="badge bg-body-tertiary text-muted border small fw-normal d-none d-sm-inline-block">
-                            {formatDisplayPhone(selectedConv.customerPhone)}
-                          </span>
-                        </div>
-                        <div className="text-muted small d-flex align-items-center gap-2" style={{ fontSize: '0.74rem' }}>
-                          <span><i className="bi bi-geo-alt me-1 text-danger"></i>{selectedConv.branchName}</span>
-                          <span>•</span>
-                          <span><i className="bi bi-person me-1 text-primary"></i>{selectedConv.assignedTo}</span>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Agent Assignment & Transfer Controls */}
-                    <div className="d-flex align-items-center gap-2">
-                      {/* Branch Lead: Can reassign conversation to another employee in the SAME branch */}
-                      {isBranchLead ? (
-                        <div className="dropdown d-none d-sm-block">
-                          <button
-                            className="btn btn-sm btn-outline-secondary dropdown-toggle d-flex align-items-center gap-1 py-1 px-2"
-                            type="button"
-                            data-bs-toggle="dropdown"
-                            aria-expanded="false"
-                            style={{ fontSize: '0.78rem' }}
-                            title="Reassign to another agent in this branch"
-                          >
-                            <i className="bi bi-person-gear text-primary"></i>
-                            <span className="text-truncate" style={{ maxWidth: '140px' }}>
-                              {selectedConv.assignedTo || 'Assign Agent'}
-                            </span>
-                          </button>
-                          <ul className="dropdown-menu dropdown-menu-end shadow-sm" style={{ fontSize: '0.82rem' }}>
-                            <li className="dropdown-header small text-muted">Reassign to Same Branch Agent</li>
-                            {(usersList.length > 0 ? usersList.filter(u => u.branch_id === activeBranchId && u.role_id === 'AGENT') : [
-                              { id: 'alpha_employee', full_name: 'Diya Patel (Helpdesk Specialist)' },
-                              { id: 'alpha_agent_rohan', full_name: 'Rohan Mehta (Support Specialist)' },
-                              { id: 'alpha_agent_kavita', full_name: 'Kavita Sen (Customer Success)' }
-                            ]).map(agent => (
-                              <li key={agent.id}>
-                                <button
-                                  className={`dropdown-item d-flex align-items-center justify-content-between ${selectedConv.assignedUserId === agent.id ? 'active' : ''}`}
-                                  onClick={() => handleAssignAgent(selectedConv.id, agent)}
-                                >
-                                  <span>{agent.full_name}</span>
-                                  {selectedConv.assignedUserId === agent.id && (
-                                    <span className="badge bg-primary-subtle text-primary small ms-2">Current</span>
-                                  )}
-                                </button>
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      ) : (
-                        <div className="d-none d-sm-flex align-items-center gap-1 py-1 px-2 rounded border bg-body-tertiary small text-muted" style={{ fontSize: '0.75rem' }}>
-                          <i className="bi bi-person-check-fill text-success"></i>
-                          <span className="text-truncate" style={{ maxWidth: '130px' }}>Assigned to You</span>
-                        </div>
-                      )}
-
-                      {/* Transfer to Another Branch Dropdown (Available to both Lead and Regular Agent) */}
-                      <div className="dropdown d-none d-sm-block">
-                        <button
-                          className="btn btn-sm btn-outline-warning dropdown-toggle d-flex align-items-center gap-1 py-1 px-2"
-                          type="button"
-                          data-bs-toggle="dropdown"
-                          aria-expanded="false"
-                          style={{ fontSize: '0.78rem' }}
-                          title="Transfer conversation to another branch"
-                        >
-                          <i className="bi bi-arrow-left-right text-warning"></i>
-                          <span className="d-none d-md-inline">Transfer Branch</span>
-                        </button>
-                        <ul className="dropdown-menu dropdown-menu-end shadow-sm" style={{ fontSize: '0.82rem' }}>
-                          <li className="dropdown-header small text-muted">Transfer to Another Branch</li>
-                          {(branches.length > 0 ? branches.filter(b => b.id !== activeBranchId) : [
-                            { id: 'aaaaaaaa-0002-4000-8000-000000000002', name: 'Noida HQ' },
-                            { id: 'aaaaaaaa-0003-4000-8000-000000000003', name: 'Gurugram Central' }
-                          ]).map(b => (
-                            <li key={b.id}>
-                              <button
-                                className="dropdown-item d-flex align-items-center justify-content-between"
-                                onClick={() => handleTransferBranch(selectedConv.id, b)}
-                              >
-                                <span><i className="bi bi-building me-1 text-primary"></i>{b.name}</span>
-                                <span className="badge bg-light text-muted small ms-2">Transfer</span>
-                              </button>
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-
-                      <select
-                        className="form-select form-select-sm message-input d-none d-sm-block"
-                        style={{ width: '115px' }}
-                        value={selectedConv.status}
-                        onChange={(e) => handleStatusChange(e.target.value)}
-                      >
-                        <option value="open">🟢 Open</option>
-                        <option value="on_hold">🟠 On Hold</option>
-                        <option value="resolved">🔵 Resolved</option>
-                        <option value="closed">⚪ Closed</option>
-                      </select>
-
-                      {isBranchLead && (
-                        <button
-                          className="btn btn-sm btn-msquare-outline d-none d-md-inline-flex align-items-center gap-1"
-                          onClick={handleRefreshWhatsApp}
-                          title="Refresh WhatsApp Session & QR (Branch Lead only)"
-                        >
-                          <i className="bi bi-arrow-clockwise text-warning"></i>
-                          <span className="small">Refresh WA</span>
-                        </button>
-                      )}
-
-                      <button
-                        className="btn btn-sm btn-outline-danger d-inline-flex align-items-center gap-1 py-1 px-2"
-                        style={{ fontSize: '0.78rem' }}
-                        onClick={(e) => handleDeleteConversation(selectedConv.id, e)}
-                        title="Delete this conversation"
-                      >
-                        <i className="bi bi-trash text-danger"></i>
-                        <span className="small d-none d-sm-inline">Delete Chat</span>
-                      </button>
-                    </div>
-                  </div>
-
-                  {transferNotice && (
-                    <div className="alert alert-success py-1.5 px-3 small m-2 mb-0 d-flex align-items-center justify-content-between shadow-sm">
-                      <span><i className="bi bi-check-circle-fill me-2 text-success"></i> {transferNotice}</span>
-                      <button className="btn btn-xs btn-link p-0 text-dark" onClick={() => setTransferNotice('')}>×</button>
-                    </div>
-                  )}
-
-                  {sendError && (
-                    <div className="alert alert-warning py-1 px-3 small m-2 mb-0 d-flex align-items-center justify-content-between">
-                      <span><i className="bi bi-exclamation-triangle me-2"></i> {sendError}</span>
-                      <button className="btn btn-xs btn-link p-0 text-dark" onClick={() => setSendError('')}>×</button>
-                    </div>
-                  )}
-
-                  {/* Message History Thread */}
-                  <div className="messages-container">
-                    <div className="text-center my-2">
-                      <span className="badge bg-body-tertiary border text-muted small py-1 px-2.5">
-                        <i className="bi bi-lock-fill me-1"></i> WhatsApp End-to-End Encrypted Session
-                      </span>
-                    </div>
-
-                    {selectedConv.messages.map((m) => (
-                      <div key={m.id} className={`message-bubble ${m.fromMe ? 'outbound' : 'inbound'}`}>
-                        <div className="message-text">{m.text}</div>
-                        <div className="message-meta">
-                          <span>{m.time}</span>
-                          {m.fromMe && (
-                            <span>
-                              {m.status === 'read' ? (
-                                <i className="bi bi-check2-all text-info" title="Read"></i>
-                              ) : m.status === 'delivered' ? (
-                                <i className="bi bi-check2-all text-muted" title="Delivered"></i>
-                              ) : (
-                                <i className="bi bi-check2 text-muted" title="Sent"></i>
-                              )}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                    <div ref={messagesEndRef} />
-                  </div>
-
-                  {/* Message Composer */}
-                  <div className="message-composer-wrapper">
-                    {/* Quick Response Templates */}
-                    <div className="d-flex gap-2 mb-2 overflow-x-auto pb-1">
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-msquare-outline text-nowrap py-0 px-2"
-                        style={{ fontSize: '0.75rem' }}
-                        onClick={() => setReplyText('Hello! Thanks for reaching out to M Square Professionals. How can we assist you today?')}
-                      >
-                        👋 Greeting
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-msquare-outline text-nowrap py-0 px-2"
-                        style={{ fontSize: '0.75rem' }}
-                        onClick={() => setReplyText('Sure! I can arrange an onboarding session for you. What time works best?')}
-                      >
-                        📅 Schedule
-                      </button>
-                      <button
-                        type="button"
-                        className="btn btn-sm btn-msquare-outline text-nowrap py-0 px-2"
-                        style={{ fontSize: '0.75rem' }}
-                        onClick={() => setReplyText('Here is our WhatsApp Helpdesk overview documentation.')}
-                      >
-                        📄 Doc Link
-                      </button>
-                    </div>
-
-                    {/* Composer Input Bar */}
-                    <form onSubmit={handleSendMessage} className="d-flex align-items-center gap-2">
-                      <input
-                        type="text"
-                        className="form-control message-input"
-                        placeholder={`Message ${selectedConv.customerPhone}...`}
-                        value={replyText}
-                        onChange={(e) => setReplyText(e.target.value)}
-                        disabled={isSending}
-                      />
-                      <button
-                        type="submit"
-                        className="btn btn-msquare-primary px-3 text-nowrap"
-                        disabled={isSending || !replyText.trim()}
-                      >
-                        {isSending ? (
-                          <span className="spinner-border spinner-border-sm" role="status"></span>
-                        ) : (
-                          <>
-                            <i className="bi bi-send-fill me-1"></i> Send
-                          </>
-                        )}
-                      </button>
-                    </form>
-                  </div>
-                </>
-              ) : (
-                <div className="d-flex flex-column align-items-center justify-content-center h-100 p-4 text-center">
-                  <div className="rounded-circle bg-body-tertiary d-inline-flex p-4 mb-3 text-secondary shadow-sm">
-                    <i className="bi bi-whatsapp fs-1 text-success"></i>
-                  </div>
-                  <h5 className="fw-bold text-body mb-2">WhatsApp Live CRM Inbox</h5>
-                  <p className="text-muted small mb-4" style={{ maxWidth: '440px' }}>
-                    No hardcoded fake chats. Connect your live WhatsApp session using the QR button in the header. When any customer sends a message to your WhatsApp number, it will instantly appear here and automatically assign to an agent.
-                  </p>
-                  <div className="d-flex gap-2">
-                    {isBranchLead && (
-                      <button
-                        className="btn btn-sm btn-msquare-primary"
-                        onClick={handleConnectWhatsApp}
-                      >
-                        <i className="bi bi-qr-code me-1"></i> Connect WhatsApp QR
-                      </button>
-                    )}
-                    <button
-                      className="btn btn-sm btn-msquare-outline"
-                      onClick={() => setShowNewChatModal(true)}
-                    >
-                      <i className="bi bi-chat-dots me-1"></i> + New Real Chat
-                    </button>
-                  </div>
-                </div>
-              )}
-            </div>
-
-          </div>
-        ) : activeView === 'channels' ? (
-          /* WhatsApp Channels View */
-          <div className="flex-grow-1 p-3 p-md-4 overflow-y-auto" style={{ backgroundColor: 'var(--bg-primary)' }}>
-            <div className="d-flex justify-content-between align-items-center mb-4 pb-2 border-bottom" style={{ borderColor: 'var(--border-subtle)' }}>
-              <div>
-                <h4 className="fw-bold mb-1 d-flex align-items-center gap-2">
-                  <i className="bi bi-whatsapp text-success"></i>
-                  M Square Branch WhatsApp Channels
-                </h4>
-                <p className="text-muted small mb-0">
-                  {isBranchLead
-                    ? 'Branch Lead Mode: You have administrative permissions to connect, scan QR, and refresh WhatsApp.'
-                    : 'Support Agent View: WhatsApp connection management is reserved for the Branch Lead.'}
-                </p>
-              </div>
-
-              {isBranchLead && (
+      {/* Main Container */}
+      <div className={`wa-main ${selectedChat ? 'has-chat' : ''}`}>
+        {/* Left Column: Accounts & Chats Pane */}
+        <div className="wa-list">
+          {/* Account Filter Bar */}
+          <div className="p-2 border-bottom" style={{ backgroundColor: 'var(--bg-card-header)' }}>
+            <div className="d-flex align-items-center justify-content-between mb-2">
+              <span className="text-secondary small fw-bold text-uppercase" style={{ fontSize: '0.75rem', letterSpacing: '0.5px' }}>
+                Filter By Account
+              </span>
+              <div className="d-flex align-items-center gap-2">
                 <button
-                  className="btn btn-msquare-primary btn-sm"
-                  onClick={handleConnectWhatsApp}
+                  className="btn btn-link btn-sm text-decoration-none p-0 small text-secondary"
+                  onClick={() => setShowAccountsModal(true)}
                 >
-                  <i className="bi bi-qr-code-scan me-1"></i> Scan QR / Connect
+                  <i className="bi bi-gear me-1"></i>Manage
+                </button>
+              </div>
+            </div>
+
+            {/* Account Selector Pills */}
+            <div className="d-flex gap-1 overflow-x-auto pb-1" style={{ scrollbarWidth: 'none' }}>
+              <button
+                className={`btn btn-sm rounded-pill text-nowrap py-0 px-2 ${
+                  selectedAccountId === 'all' ? 'btn-primary' : 'btn-outline-secondary border-0'
+                }`}
+                style={{ fontSize: '0.8rem' }}
+                onClick={() => setSelectedAccountId('all')}
+              >
+                All Accounts ({chats.length})
+              </button>
+
+              {accounts.map(acc => {
+                const isConn = acc.status === 'CONNECTED';
+                const count = chats.filter(c => c.accountId === acc.id).length;
+                return (
+                  <button
+                    key={acc.id}
+                    className={`btn btn-sm rounded-pill text-nowrap py-0 px-2 d-flex align-items-center gap-1 ${
+                      selectedAccountId === acc.id ? 'btn-primary' : 'btn-outline-secondary'
+                    }`}
+                    style={{ fontSize: '0.8rem' }}
+                    onClick={() => setSelectedAccountId(acc.id)}
+                  >
+                    <span
+                      className={`d-inline-block rounded-circle`}
+                      style={{
+                        width: '7px',
+                        height: '7px',
+                        backgroundColor: isConn ? '#198754' : acc.status === 'SCAN_QR' ? '#ffc107' : '#6c757d'
+                      }}
+                    ></span>
+                    <span>{acc.name}</span>
+                    <span className="badge bg-secondary-subtle text-secondary py-0 px-1 rounded-pill" style={{ fontSize: '0.7rem' }}>
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Search Bar & New Chat Button */}
+          <div className="p-2 border-bottom d-flex gap-2">
+            <div className="input-group input-group-sm flex-grow-1">
+              <span className="input-group-text border-0 bg-transparent text-secondary">
+                <i className="bi bi-search"></i>
+              </span>
+              <input
+                type="text"
+                className="form-control border-0 bg-transparent message-input"
+                placeholder="Search chats, contacts, media..."
+                value={searchQuery}
+                onChange={e => setSearchQuery(e.target.value)}
+              />
+              {searchQuery && (
+                <button className="btn btn-sm text-secondary" onClick={() => setSearchQuery('')}>
+                  <i className="bi bi-x"></i>
                 </button>
               )}
             </div>
 
-            <div className="row g-4">
-              <div className="col-lg-6">
-                <div className="card h-100 p-4 border" style={{ borderColor: 'var(--border-strong)' }}>
-                  <div className="d-flex justify-content-between align-items-center mb-3">
-                    <h5 className="fw-bold mb-0">Greater Noida Hub</h5>
-                    <span className={`badge ${waStatus === 'CONNECTED' ? 'bg-success-subtle text-success' : 'bg-warning-subtle text-warning'}`}>
-                      {waStatus}
+            <button
+              className="btn btn-sm btn-outline-success d-flex align-items-center gap-1"
+              title="Start New Chat"
+              onClick={() => {
+                if (accounts.length === 0) {
+                  setShowAccountsModal(true);
+                  return;
+                }
+                const firstConnected = accounts.find(a => a.status === 'CONNECTED') || accounts[0];
+                setNewChatAccountId(firstConnected ? firstConnected.id : '');
+                setShowNewChatModal(true);
+              }}
+            >
+              <i className="bi bi-chat-plus-fill"></i>
+              <span className="d-none d-lg-inline small">New</span>
+            </button>
+          </div>
+
+          {/* Conversations List */}
+          <div className="flex-grow-1 overflow-y-auto">
+            {filteredChats.length === 0 ? (
+              <div className="p-4 text-center text-muted">
+                <i className="bi bi-chat-dots fs-1 d-block mb-2 text-secondary opacity-50"></i>
+                <p className="small mb-2">No conversations found</p>
+                {accounts.length === 0 ? (
+                  <button
+                    className="btn btn-sm btn-msquare-primary mt-1"
+                    onClick={() => setShowAccountsModal(true)}
+                  >
+                    + Add WhatsApp Account
+                  </button>
+                ) : (
+                  <div className="d-flex flex-column gap-2 align-items-center">
+                    <button
+                      className="btn btn-sm btn-outline-primary"
+                      onClick={handleSyncWithPhone}
+                      disabled={isManualSyncing}
+                    >
+                      <i className="bi bi-arrow-repeat me-1"></i>Sync Chats from Phone
+                    </button>
+                    <button
+                      className="btn btn-sm btn-outline-success"
+                      onClick={() => {
+                        const firstConnected = accounts.find(a => a.status === 'CONNECTED') || accounts[0];
+                        setNewChatAccountId(firstConnected ? firstConnected.id : '');
+                        setShowNewChatModal(true);
+                      }}
+                    >
+                      Start a New Chat
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              filteredChats.map(chat => {
+                const isSelected = selectedChat?.id === chat.id;
+                return (
+                  <div
+                    key={chat.id}
+                    className={`wa-row ${isSelected ? 'active' : ''}`}
+                    onClick={() => setSelectedChat(chat)}
+                  >
+                    {/* Avatar */}
+                    <div className="wa-avatar">
+                      {(chat.customerName || chat.customerPhone || '?').charAt(0).toUpperCase()}
+                    </div>
+
+                    {/* Chat Info */}
+                    <div className="flex-grow-1 overflow-hidden">
+                      <div className="d-flex justify-content-between align-items-baseline">
+                        <span className="fw-semibold text-truncate">
+                          {chat.customerName || formatPhone(chat.customerPhone)}
+                        </span>
+                        <span className="text-secondary flex-shrink-0 ms-2" style={{ fontSize: '0.72rem' }}>
+                          {formatTime(chat.lastTimestamp)}
+                        </span>
+                      </div>
+
+                      <div className="d-flex align-items-center justify-content-between mt-1">
+                        <span className="text-muted text-truncate" style={{ fontSize: '0.84rem' }}>
+                          {chat.lastFromMe ? <i className="bi bi-check2-all text-info me-1"></i> : null}
+                          {chat.lastMessage}
+                        </span>
+
+                        {/* Account Badge */}
+                        <span
+                          className="badge bg-secondary-subtle text-secondary border px-1 py-0 rounded"
+                          style={{ fontSize: '0.68rem', letterSpacing: '0.2px' }}
+                          title={`Received on ${chat.accountName}`}
+                        >
+                          {chat.accountName}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+
+        {/* Right / Middle Column: Active Chat Thread Pane */}
+        {selectedChat ? (
+          <div className="wa-chat">
+            {/* Active Chat Header */}
+            <div className="wa-chat-header">
+              <div className="d-flex align-items-center gap-2">
+                <button
+                  className="wa-icon-btn d-md-none"
+                  onClick={() => setSelectedChat(null)}
+                >
+                  <i className="bi bi-arrow-left"></i>
+                </button>
+
+                <div className="wa-avatar">
+                  {(selectedChat.customerName || selectedChat.customerPhone || '?').charAt(0).toUpperCase()}
+                </div>
+
+                <div>
+                  <h6 className="mb-0 fw-bold">
+                    {selectedChat.customerName || formatPhone(selectedChat.customerPhone)}
+                  </h6>
+                  <div className="d-flex align-items-center gap-2 mt-1">
+                    <span className="text-muted small" style={{ fontSize: '0.78rem' }}>
+                      {formatPhone(selectedChat.customerPhone)}
+                    </span>
+                    <span className="text-secondary" style={{ fontSize: '0.75rem' }}>•</span>
+                    <span className="msquare-badge py-0" style={{ fontSize: '0.75rem' }}>
+                      <i className="bi bi-whatsapp me-1 text-success"></i>
+                      Via {selectedChat.accountName}
                     </span>
                   </div>
-                  <p className="text-muted small mb-3">
-                    Branch Code: <code>GNOIDA</code> | Assigned Lead: <strong>Aarav Sharma</strong>
-                  </p>
-
-                  <div className="p-3 rounded mb-3" style={{ backgroundColor: 'var(--bg-secondary)', border: '1px dashed var(--border-strong)' }}>
-                    <div className="d-flex align-items-center gap-2 small fw-semibold">
-                      {waStatus === 'CONNECTED' ? (
-                        <>
-                          <i className="bi bi-check-circle-fill text-success"></i>
-                          <span className="text-success">WhatsApp Socket Active: {waPhone ? `+${waPhone}` : 'Connected'}</span>
-                        </>
-                      ) : (
-                        <>
-                          <i className="bi bi-qr-code text-warning"></i>
-                          <span className="text-warning">Ready to Connect QR Code</span>
-                        </>
-                      )}
-                    </div>
-                    <div className="text-muted small mt-1">Multi-device auth isolated in <code>wa_sessions/{activeTenantId}/{activeBranchId}</code></div>
-                  </div>
-
-                  <div className="d-flex gap-2 mt-auto">
-                    {isBranchLead ? (
-                      <>
-                        <button
-                          className="btn btn-sm btn-msquare-primary"
-                          onClick={handleConnectWhatsApp}
-                        >
-                          <i className="bi bi-qr-code me-1"></i> {waStatus === 'CONNECTED' ? 'View Connection' : 'Scan QR Code'}
-                        </button>
-                        <button
-                          className="btn btn-sm btn-msquare-outline"
-                          onClick={handleRefreshWhatsApp}
-                        >
-                          <i className="bi bi-arrow-clockwise me-1 text-warning"></i> Refresh Session
-                        </button>
-                      </>
-                    ) : (
-                      <span className="badge bg-secondary-subtle text-muted py-2 px-3">
-                        <i className="bi bi-lock-fill me-1"></i> Restricted: Only Branch Lead can refresh session
-                      </span>
-                    )}
-                  </div>
                 </div>
               </div>
 
-              <div className="col-lg-6">
-                <div className="card h-100 p-4 border" style={{ borderColor: 'var(--border-strong)' }}>
-                  <div className="d-flex justify-content-between align-items-center mb-3">
-                    <h5 className="fw-bold mb-0">Noida HQ</h5>
-                    <span className="badge bg-secondary-subtle text-secondary">Standby</span>
-                  </div>
-                  <p className="text-muted small mb-3">
-                    Branch Code: <code>NOIDAHQ</code> | Phone: +91 98765 43211
-                  </p>
-                  <div className="p-3 rounded mb-3" style={{ backgroundColor: 'var(--bg-secondary)', border: '1px dashed var(--border-strong)' }}>
-                    <div className="d-flex align-items-center gap-2 text-muted small fw-semibold">
-                      <i className="bi bi-circle"></i>
-                      <span>Secondary Branch Channel</span>
-                    </div>
-                    <div className="text-muted small mt-1">Ready for dedicated secondary device pairing.</div>
-                  </div>
-                </div>
+              <div className="d-flex align-items-center gap-2">
+                <button
+                  className="btn btn-sm btn-outline-primary d-flex align-items-center gap-1"
+                  onClick={handleSyncWithPhone}
+                  disabled={isManualSyncing}
+                  title="Fetch older messages from phone for this chat"
+                >
+                  <i className={`bi bi-arrow-down-circle ${isManualSyncing ? 'spin-icon' : ''}`}></i>
+                  <span className="d-none d-sm-inline small">Sync History</span>
+                </button>
+
+                <button
+                  className="btn btn-sm btn-outline-secondary"
+                  onClick={() => fetchMessages(selectedChat)}
+                  title="Refresh chat messages"
+                >
+                  <i className="bi bi-arrow-clockwise"></i>
+                </button>
               </div>
             </div>
+
+            {/* Messages Thread */}
+            <div
+              className="wa-thread chat-thread"
+            >
+              {loadingMessages ? (
+                <div className="d-flex justify-content-center align-items-center h-100">
+                  <div className="spinner-border text-primary spinner-border-sm" role="status"></div>
+                </div>
+              ) : messages.length === 0 ? (
+                <div className="text-center text-muted my-auto">
+                  <i className="bi bi-chat-heart fs-1 opacity-50 d-block mb-2"></i>
+                  <p className="small mb-2">No local message history yet.</p>
+                  <button
+                    className="btn btn-sm btn-outline-primary"
+                    onClick={handleSyncWithPhone}
+                    disabled={isManualSyncing}
+                  >
+                    <i className="bi bi-arrow-down-circle me-1"></i>Fetch Messages from Phone
+                  </button>
+                </div>
+              ) : (
+                messages.map((m, idx) => {
+                  const isMe = m.fromMe;
+                  const newDay =
+                    idx === 0 || new Date(messages[idx - 1].timestamp).toDateString() !== new Date(m.timestamp).toDateString();
+                  return (
+                    <React.Fragment key={m.id || idx}>
+                    {newDay && <div className="wa-day"><span>{formatDay(m.timestamp)}</span></div>}
+                    <div className={`d-flex ${isMe ? 'justify-content-end' : 'justify-content-start'}`}>
+                      <div
+                        className={`bubble ${isMe ? 'bubble-out' : 'bubble-in'}`}
+                      >
+                        {/* Media Display: IMAGE */}
+                        {m.mediaType === 'image' && (
+                          <div className="mb-2">
+                            {m.mediaUrl ? (
+                              <img
+                                src={m.mediaUrl}
+                                alt="Shared WhatsApp Image"
+                                className="img-fluid rounded shadow-sm"
+                                style={{ maxHeight: '320px', cursor: 'zoom-in', objectFit: 'contain' }}
+                                onClick={() => setLightboxImage(m.mediaUrl)}
+                              />
+                            ) : (
+                              <div className="p-2 border rounded small bg-body-tertiary text-muted">
+                                <i className="bi bi-image me-1"></i> [Photo]
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Media Display: VIDEO */}
+                        {m.mediaType === 'video' && (
+                          <div className="mb-2">
+                            {m.mediaUrl ? (
+                              <video
+                                src={m.mediaUrl}
+                                controls
+                                className="rounded shadow-sm w-100"
+                                style={{ maxHeight: '320px', backgroundColor: '#000' }}
+                              />
+                            ) : (
+                              <div className="p-2 border rounded small bg-body-tertiary text-muted">
+                                <i className="bi bi-camera-video me-1"></i> [Video]
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Media Display: AUDIO */}
+                        {m.mediaType === 'audio' && (
+                          <div className="mb-2">
+                            {m.mediaUrl ? (
+                              <audio src={m.mediaUrl} controls className="w-100" style={{ minWidth: '220px' }} />
+                            ) : (
+                              <div className="p-2 border rounded small bg-body-tertiary text-muted">
+                                <i className="bi bi-mic me-1"></i> [Voice Message]
+                              </div>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Media Display: DOCUMENT */}
+                        {m.mediaType === 'document' && (
+                          <div className="mb-2 p-2 rounded border bg-body-tertiary d-flex align-items-center justify-content-between gap-2">
+                            <div className="d-flex align-items-center gap-2 overflow-hidden">
+                              <i className="bi bi-file-earmark-text fs-4 text-primary"></i>
+                              <span className="small text-truncate" style={{ maxWidth: '180px' }}>
+                                {m.fileName || 'Document'}
+                              </span>
+                            </div>
+                            {m.mediaUrl && (
+                              <a
+                                href={m.mediaUrl}
+                                download={m.fileName || 'file'}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="btn btn-sm btn-outline-primary py-0 px-2"
+                              >
+                                <i className="bi bi-download"></i>
+                              </a>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Text / Caption */}
+                        {m.text && (
+                          <div style={{ wordBreak: 'break-word', whiteSpace: 'pre-wrap', fontSize: '0.9rem' }}>
+                            {m.text}
+                          </div>
+                        )}
+
+                        {/* Timestamp & Phone-sent indicator */}
+                        <div
+                          className="wa-time" style={{ opacity: isMe ? 0.9 : 0.6 }}
+                        >
+                          <span>{formatClock(m.timestamp)}</span>
+                          {isMe && <i className="bi bi-check2-all" title="Sent"></i>}
+                        </div>
+                      </div>
+                    </div>
+                    </React.Fragment>
+                  );
+                })
+              )}
+              <div ref={messagesEndRef} />
+            </div>
+
+            {/* Error banner if send failed */}
+            {sendError && (
+              <div className="px-3 py-2 bg-danger-subtle text-danger small d-flex align-items-center justify-content-between">
+                <span>
+                  <i className="bi bi-exclamation-circle-fill me-2"></i>
+                  {sendError}
+                </span>
+                <button
+                  className="btn btn-sm btn-link text-danger p-0"
+                  onClick={() => handleConnectAccount(selectedChat.accountId)}
+                >
+                  Reconnect Account
+                </button>
+              </div>
+            )}
+
+            {/* Selected Attachment Preview Box */}
+            {selectedFile && (
+              <div
+                className="p-2 border-top d-flex align-items-center justify-content-between"
+                style={{ backgroundColor: 'var(--bg-card-header)' }}
+              >
+                <div className="d-flex align-items-center gap-2 overflow-hidden">
+                  {filePreviewUrl ? (
+                    <img
+                      src={filePreviewUrl}
+                      alt="Upload Preview"
+                      style={{ width: '42px', height: '42px', objectFit: 'cover', borderRadius: '6px' }}
+                    />
+                  ) : (
+                    <div
+                      className="rounded bg-secondary text-white d-flex align-items-center justify-content-center"
+                      style={{ width: '42px', height: '42px' }}
+                    >
+                      <i className={`bi ${selectedFile.type.startsWith('video/') ? 'bi-camera-video' : 'bi-file-earmark'}`}></i>
+                    </div>
+                  )}
+                  <div className="overflow-hidden">
+                    <div className="small fw-semibold text-truncate" style={{ maxWidth: '280px' }}>
+                      {selectedFile.name}
+                    </div>
+                    <div className="text-muted" style={{ fontSize: '0.72rem' }}>
+                      {formatFileSize(selectedFile.size)} • Ready to send
+                    </div>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-sm btn-outline-danger border-0"
+                  onClick={clearAttachment}
+                  title="Remove attachment"
+                >
+                  <i className="bi bi-x-lg"></i>
+                </button>
+              </div>
+            )}
+
+            {/* Reply Input Bar */}
+            <form onSubmit={handleSendMessage} className="wa-composer">
+              <input
+                type="file"
+                ref={fileInputRef}
+                style={{ display: 'none' }}
+                accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.txt"
+                onChange={handleFileSelect}
+              />
+              <div className="wa-input-pill">
+                <button
+                  type="button"
+                  className="wa-icon-btn"
+                  onClick={() => fileInputRef.current?.click()}
+                  title="Attach Photo, Video or Document"
+                  disabled={isSending}
+                >
+                  <i className="bi bi-paperclip"></i>
+                </button>
+                <input
+                  type="text"
+                  placeholder={selectedFile ? `Add caption to ${selectedFile.name}...` : 'Type a message'}
+                  value={replyText}
+                  onChange={e => setReplyText(e.target.value)}
+                  disabled={isSending}
+                />
+              </div>
+              <button
+                type="submit"
+                className="wa-send"
+                disabled={isSending || (!replyText.trim() && !selectedFile)}
+                title="Send"
+              >
+                {isSending ? (
+                  <span className="spinner-border spinner-border-sm" role="status"></span>
+                ) : (
+                  <i className="bi bi-send-fill"></i>
+                )}
+              </button>
+            </form>
           </div>
         ) : (
-          /* Branches & Users Roster View */
-          <div className="flex-grow-1 p-3 p-md-4 overflow-y-auto" style={{ backgroundColor: 'var(--bg-primary)' }}>
-            <div className="d-flex justify-content-between align-items-center mb-4 pb-2 border-bottom" style={{ borderColor: 'var(--border-subtle)' }}>
-              <div>
-                <h4 className="fw-bold mb-1">M Square Branches & Team Roster</h4>
-                <p className="text-muted small mb-0">Branch Leads manage WhatsApp connections; agents handle chat workflows.</p>
+          <div className="wa-empty">
+            <div className="text-center" style={{ maxWidth: '400px' }}>
+              <div
+                className="msquare-logo-badge mx-auto mb-3"
+                style={{ width: '64px', height: '64px', fontSize: '1.8rem' }}
+              >
+                <span>M²</span>
               </div>
-            </div>
-
-            <div className="row g-4">
-              <div className="col-lg-6">
-                <div className="card p-3 shadow-sm border">
-                  <h6 className="fw-bold mb-3"><i className="bi bi-building me-2 text-warning"></i>Active Branches</h6>
-                  <div className="table-responsive">
-                    <table className="table table-hover align-middle small mb-0">
-                      <thead>
-                        <tr>
-                          <th>Branch Name</th>
-                          <th>Code</th>
-                          <th>Status</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {branches.map(b => (
-                          <tr key={b.id}>
-                            <td className="fw-semibold">{b.name}</td>
-                            <td><code>{b.code}</code></td>
-                            <td><span className="badge bg-success-subtle text-success">{b.status}</span></td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </div>
-
-              <div className="col-lg-6">
-                <div className="card p-3 shadow-sm border">
-                  <h6 className="fw-bold mb-3"><i className="bi bi-people me-2 text-primary"></i>Assigned Team Members</h6>
-                  <div className="table-responsive">
-                    <table className="table table-hover align-middle small mb-0">
-                      <thead>
-                        <tr>
-                          <th>Name</th>
-                          <th>Role</th>
-                          <th>Assigned Branch</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {usersList.map(u => (
-                          <tr key={u.id}>
-                            <td className="fw-semibold">{u.full_name}</td>
-                            <td>
-                              <span className={`badge ${u.role_id === 'BRANCH_ADMIN' ? 'bg-warning-subtle text-warning' : 'bg-secondary-subtle text-secondary'}`}>
-                                {u.role_id === 'BRANCH_ADMIN' ? 'Branch Lead' : u.role_id}
-                              </span>
-                            </td>
-                            <td>{branches.find(b => b.id === u.branch_id)?.name || 'HQ / Global'}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
+              <h5>Mobile & Desktop WhatsApp Hub</h5>
+              <p className="small text-secondary mb-4">
+                Select a conversation on the left to read and reply. All messages sent or received on your phone sync automatically to this dashboard.
+              </p>
+              <div className="d-flex justify-content-center gap-2">
+                <button
+                  className="btn btn-sm btn-msquare-primary"
+                  onClick={() => setShowAccountsModal(true)}
+                >
+                  <i className="bi bi-whatsapp me-1"></i>Manage Accounts
+                </button>
+                <button
+                  className="btn btn-sm btn-outline-primary"
+                  onClick={handleSyncWithPhone}
+                  disabled={isManualSyncing || connectedAccountsCount === 0}
+                >
+                  <i className="bi bi-arrow-repeat me-1"></i>Sync Phone
+                </button>
               </div>
             </div>
           </div>
         )}
       </div>
 
-      {/* 4. MODAL: Live In-App WhatsApp QR Code Pairing Modal */}
-      {showQrModal && (
-        <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 1060 }}>
-          <div className="modal-dialog modal-dialog-centered" style={{ maxWidth: '420px' }}>
-            <div className="modal-content border-0 shadow-lg" style={{ borderRadius: '16px' }}>
-              <div className="modal-header border-bottom">
-                <h5 className="modal-title fw-bold d-flex align-items-center gap-2">
-                  <i className="bi bi-whatsapp text-success fs-5"></i>
-                  <span>WhatsApp Branch Pairing</span>
-                </h5>
-                <button type="button" className="btn-close" onClick={() => setShowQrModal(false)}></button>
+      {/* Lightbox Modal for Full Image View */}
+      {lightboxImage && (
+        <div
+          className="modal show d-block"
+          style={{ backgroundColor: 'rgba(0,0,0,0.85)', zIndex: 1060 }}
+          onClick={() => setLightboxImage(null)}
+        >
+          <div className="modal-dialog modal-dialog-centered modal-xl text-center">
+            <div className="modal-content bg-transparent border-0">
+              <div className="text-end mb-2">
+                <button
+                  className="btn btn-light btn-sm rounded-circle"
+                  onClick={() => setLightboxImage(null)}
+                >
+                  <i className="bi bi-x-lg"></i>
+                </button>
               </div>
-              <div className="modal-body text-center p-4">
-                <p className="text-muted small mb-3">
-                  Scan this QR code from your WhatsApp mobile app:
-                  <br /><strong>Linked Devices &gt; Link a Device</strong>
-                </p>
+              <img
+                src={lightboxImage}
+                alt="Enlarged WhatsApp Media"
+                className="img-fluid rounded mx-auto shadow-lg"
+                style={{ maxHeight: '85vh', objectFit: 'contain' }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
-                <div
-                  className="p-3 rounded mx-auto mb-3 d-flex align-items-center justify-content-center"
-                  style={{
-                    width: '260px',
-                    height: '260px',
-                    backgroundColor: '#ffffff',
-                    border: '2px dashed var(--brand-orange)',
-                    borderRadius: '12px'
+      {/* MODAL 1: Manage Accounts & Add Account */}
+      {showAccountsModal && (
+        <div className="modal show d-block" style={{ backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 1050 }}>
+          <div className="modal-dialog modal-lg modal-dialog-centered">
+            <div className="modal-content shadow-lg border-0" style={{ backgroundColor: 'var(--bg-card)' }}>
+              <div className="modal-header border-bottom">
+                <div className="d-flex align-items-center gap-2">
+                  <i className="bi bi-whatsapp text-success fs-5"></i>
+                  <h5 className="modal-title fw-bold">WhatsApp Accounts</h5>
+                </div>
+                <button
+                  type="button"
+                  className="btn-close"
+                  onClick={() => {
+                    setShowAccountsModal(false);
+                    setQrModalAccount(null);
+                  }}
+                ></button>
+              </div>
+
+              <div className="modal-body p-4">
+                {/* Section 1: Add New Account */}
+                <div className="p-3 rounded mb-4" style={{ backgroundColor: 'var(--bg-card-header)', border: '1px solid var(--border-subtle)' }}>
+                  <h6 className="fw-bold mb-2">
+                    <i className="bi bi-plus-circle-fill text-primary me-2"></i>
+                    Add New WhatsApp Account
+                  </h6>
+                  <p className="small text-muted mb-3">
+                    Give this WhatsApp account a label (e.g. "Personal", "Sales", "Support"). Scanning the QR code links this account and automatically syncs all existing chats, media, and phone messages.
+                  </p>
+                  <form onSubmit={handleCreateAccount} className="d-flex gap-2">
+                    <input
+                      type="text"
+                      className="form-control form-control-sm"
+                      placeholder="Account Name (e.g. Sales Support)"
+                      value={newAccountName}
+                      onChange={e => setNewAccountName(e.target.value)}
+                      required
+                    />
+                    <button
+                      type="submit"
+                      className="btn btn-sm btn-msquare-primary text-nowrap"
+                      disabled={isCreatingAccount || !newAccountName.trim()}
+                    >
+                      {isCreatingAccount ? (
+                        <span className="spinner-border spinner-border-sm me-1"></span>
+                      ) : (
+                        <i className="bi bi-qr-code me-1"></i>
+                      )}
+                      Generate QR Code
+                    </button>
+                  </form>
+                </div>
+
+                {/* Section 2: Active QR Scanner if an account is in SCAN_QR state */}
+                {qrModalAccount && (
+                  <div className="p-4 rounded border border-success-subtle mb-4 text-center" style={{ backgroundColor: 'var(--bg-card-header)' }}>
+                    <h6 className="fw-bold text-success mb-2">
+                      Pair Account: {qrModalAccount.name}
+                    </h6>
+                    <p className="small text-muted mb-3">
+                      Open WhatsApp on your phone → Settings / Menu → <strong>Linked Devices</strong> → <strong>Link a Device</strong> → Point camera at this QR code:
+                    </p>
+
+                    {qrModalAccount.status === 'CONNECTED' ? (
+                      <div className="alert alert-success d-inline-block py-2 px-4 mb-0">
+                        <i className="bi bi-check-circle-fill me-2 fs-5"></i>
+                        <strong>Connected Successfully!</strong> Phone: {qrModalAccount.phone || 'Ready'}
+                      </div>
+                    ) : qrModalAccount.qrDataUrl ? (
+                      <div className="d-flex flex-column align-items-center">
+                        <div className="p-2 bg-white rounded shadow-sm d-inline-block mb-3">
+                          <img
+                            src={qrModalAccount.qrDataUrl}
+                            alt="WhatsApp Web QR Code"
+                            style={{ width: '220px', height: '220px', display: 'block' }}
+                          />
+                        </div>
+                        <span className="badge bg-warning text-dark small py-1 px-3">
+                          <span className="spinner-grow spinner-grow-sm me-1"></span>
+                          Waiting for phone to scan...
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="py-4">
+                        <div className="spinner-border text-success mb-2" role="status"></div>
+                        <p className="small text-muted">Initializing WhatsApp socket and generating QR code...</p>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Section 3: Existing Accounts Table */}
+                <h6 className="fw-bold mb-3">Connected Accounts ({accounts.length})</h6>
+                {loadingAccounts ? (
+                  <div className="text-center py-3">
+                    <div className="spinner-border text-primary spinner-border-sm" role="status"></div>
+                  </div>
+                ) : accounts.length === 0 ? (
+                  <div className="text-center py-4 text-muted border rounded">
+                    <p className="small mb-0">No WhatsApp accounts linked yet. Use the form above to add your first account!</p>
+                  </div>
+                ) : (
+                  <div className="table-responsive">
+                    <table className="table table-hover align-middle small mb-0">
+                      <thead className="table-light">
+                        <tr>
+                          <th>Account Name</th>
+                          <th>Phone Number</th>
+                          <th>Status</th>
+                          <th className="text-end">Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {accounts.map(acc => {
+                          const isConn = acc.status === 'CONNECTED';
+                          return (
+                            <tr key={acc.id}>
+                              <td>
+                                <strong className="d-block">{acc.name}</strong>
+                                <span className="text-secondary" style={{ fontSize: '0.72rem' }}>ID: {acc.id}</span>
+                              </td>
+                              <td>{acc.phone ? formatPhone(acc.phone) : '—'}</td>
+                              <td>
+                                {isConn ? (
+                                  <span className="badge bg-success-subtle text-success border border-success-subtle">
+                                    <i className="bi bi-check-circle-fill me-1"></i>Connected
+                                  </span>
+                                ) : acc.status === 'SCAN_QR' ? (
+                                  <span className="badge bg-warning-subtle text-warning border border-warning-subtle">
+                                    <i className="bi bi-qr-code me-1"></i>Scan QR Code
+                                  </span>
+                                ) : (
+                                  <span className="badge bg-secondary-subtle text-secondary border border-secondary-subtle">
+                                    Disconnected
+                                  </span>
+                                )}
+                              </td>
+                              <td className="text-end">
+                                <div className="btn-group btn-group-sm">
+                                  {!isConn && (
+                                    <button
+                                      className="btn btn-outline-primary"
+                                      onClick={() => handleConnectAccount(acc.id)}
+                                      title="Scan QR / Reconnect"
+                                    >
+                                      <i className="bi bi-qr-code"></i> Connect
+                                    </button>
+                                  )}
+                                  {isConn && (
+                                    <button
+                                      className="btn btn-outline-warning"
+                                      onClick={() => handleDisconnectAccount(acc.id, false)}
+                                      title="Disconnect socket"
+                                    >
+                                      Disconnect
+                                    </button>
+                                  )}
+                                  <button
+                                    className="btn btn-outline-danger"
+                                    onClick={() => handleDeleteAccount(acc.id)}
+                                    title="Unlink & Delete Account"
+                                  >
+                                    <i className="bi bi-trash"></i>
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+
+              <div className="modal-footer border-top">
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => {
+                    setShowAccountsModal(false);
+                    setQrModalAccount(null);
                   }}
                 >
-                  {qrLoading ? (
-                    <div className="text-center">
-                      <div className="spinner-border text-warning mb-2" role="status"></div>
-                      <div className="small text-muted">Generating fresh session QR...</div>
-                    </div>
-                  ) : waStatus === 'CONNECTED' ? (
-                    <div className="text-center text-success">
-                      <i className="bi bi-check-circle-fill display-4 mb-2"></i>
-                      <div className="fw-bold">Connected Successfully!</div>
-                      <div className="small text-muted mt-1">{waPhone ? `+${waPhone}` : 'Device linked'}</div>
-                    </div>
-                  ) : waQrDataUrl ? (
-                    <img
-                      src={waQrDataUrl}
-                      alt="WhatsApp QR Code"
-                      style={{ width: '100%', height: '100%', objectFit: 'contain' }}
-                    />
-                  ) : (
-                    <div className="text-center text-muted small">
-                      <i className="bi bi-qr-code fs-1 d-block mb-1"></i>
-                      Click Refresh to load QR
-                    </div>
-                  )}
-                </div>
-
-                <div className="d-flex justify-content-between align-items-center">
-                  <span className="badge bg-secondary-subtle text-secondary small">
-                    Status: {waStatus}
-                  </span>
-                  <button
-                    className="btn btn-sm btn-msquare-outline"
-                    onClick={handleRefreshWhatsApp}
-                    disabled={qrLoading}
-                  >
-                    <i className="bi bi-arrow-clockwise me-1"></i> Refresh QR
-                  </button>
-                </div>
-              </div>
-              <div className="modal-footer border-top">
-                <button type="button" className="btn btn-secondary btn-sm" onClick={() => setShowQrModal(false)}>
                   Done
                 </button>
               </div>
@@ -1651,65 +1324,93 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* 5. MODAL: Start New Real Chat (with any real phone number) */}
+      {/* MODAL 2: New Real Chat */}
       {showNewChatModal && (
-        <div className="modal show d-block" tabIndex="-1" style={{ backgroundColor: 'rgba(0,0,0,0.6)', zIndex: 1060 }}>
-          <div className="modal-dialog modal-dialog-centered" style={{ maxWidth: '440px' }}>
-            <div className="modal-content border-0 shadow-lg" style={{ borderRadius: '16px' }}>
+        <div className="modal show d-block" style={{ backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 1050 }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content shadow-lg border-0" style={{ backgroundColor: 'var(--bg-card)' }}>
               <div className="modal-header border-bottom">
-                <h5 className="modal-title fw-bold d-flex align-items-center gap-2">
-                  <i className="bi bi-telephone-plus-fill text-success"></i>
-                  <span>Start Real WhatsApp Chat</span>
-                </h5>
-                <button type="button" className="btn-close" onClick={() => setShowNewChatModal(false)}></button>
+                <div className="d-flex align-items-center gap-2">
+                  <i className="bi bi-chat-plus-fill text-success fs-5"></i>
+                  <h5 className="modal-title fw-bold">Start New WhatsApp Chat</h5>
+                </div>
+                <button
+                  type="button"
+                  className="btn-close"
+                  onClick={() => setShowNewChatModal(false)}
+                ></button>
               </div>
-              <form onSubmit={handleStartNewRealChat}>
+
+              <form onSubmit={handleStartNewChat}>
                 <div className="modal-body p-4">
-                  <p className="text-muted small mb-3">
-                    Enter any real phone number with country code to start a conversation through your connected branch account.
-                  </p>
-
                   <div className="mb-3">
-                    <label className="form-label small fw-semibold text-muted">Customer Phone Number</label>
-                    <input
-                      type="text"
-                      className="form-control message-input"
-                      placeholder="e.g. +91 9876543210"
-                      value={newChatPhone}
-                      onChange={(e) => setNewChatPhone(e.target.value)}
+                    <label className="form-label small fw-semibold">Send From Account</label>
+                    <select
+                      className="form-select form-select-sm"
+                      value={newChatAccountId}
+                      onChange={e => setNewChatAccountId(e.target.value)}
                       required
-                    />
-                    <div className="text-muted small mt-1" style={{ fontSize: '0.72rem' }}>Include country code (e.g. +91 for India, +1 for US).</div>
+                    >
+                      <option value="" disabled>-- Select an Account --</option>
+                      {accounts.map(acc => (
+                        <option key={acc.id} value={acc.id}>
+                          {acc.name} ({acc.phone || acc.status})
+                        </option>
+                      ))}
+                    </select>
                   </div>
 
                   <div className="mb-3">
-                    <label className="form-label small fw-semibold text-muted">Customer Name (Optional)</label>
-                    <input
-                      type="text"
-                      className="form-control message-input"
-                      placeholder="e.g. Manish Sharma"
-                      value={newChatName}
-                      onChange={(e) => setNewChatName(e.target.value)}
-                    />
+                    <label className="form-label small fw-semibold">Customer Phone Number</label>
+                    <div className="input-group input-group-sm">
+                      <span className="input-group-text">
+                        <i className="bi bi-telephone"></i>
+                      </span>
+                      <input
+                        type="tel"
+                        className="form-control"
+                        placeholder="e.g. +91 98765 43210 or 9876543210"
+                        value={newChatPhone}
+                        onChange={e => setNewChatPhone(e.target.value)}
+                        required
+                      />
+                    </div>
+                    <div className="form-text" style={{ fontSize: '0.75rem' }}>
+                      Include country code (e.g. +91 for India, +1 for US).
+                    </div>
                   </div>
 
                   <div className="mb-3">
-                    <label className="form-label small fw-semibold text-muted">Initial Outbound Message</label>
+                    <label className="form-label small fw-semibold">Initial Message</label>
                     <textarea
-                      className="form-control message-input"
+                      className="form-control form-control-sm"
                       rows="3"
-                      value={newChatInitialMsg}
-                      onChange={(e) => setNewChatInitialMsg(e.target.value)}
-                      placeholder="Type initial message to send..."
+                      value={newChatText}
+                      onChange={e => setNewChatText(e.target.value)}
+                      required
                     ></textarea>
                   </div>
                 </div>
+
                 <div className="modal-footer border-top">
-                  <button type="button" className="btn btn-outline-secondary btn-sm" onClick={() => setShowNewChatModal(false)}>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => setShowNewChatModal(false)}
+                  >
                     Cancel
                   </button>
-                  <button type="submit" className="btn btn-msquare-primary btn-sm px-3">
-                    <i className="bi bi-send-fill me-1"></i> Send & Open Chat
+                  <button
+                    type="submit"
+                    className="btn btn-msquare-primary btn-sm"
+                    disabled={isStartingNewChat}
+                  >
+                    {isStartingNewChat ? (
+                      <span className="spinner-border spinner-border-sm me-1"></span>
+                    ) : (
+                      <i className="bi bi-send-fill me-1"></i>
+                    )}
+                    Send & Open Chat
                   </button>
                 </div>
               </form>

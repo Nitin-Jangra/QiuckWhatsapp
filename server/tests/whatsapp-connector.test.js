@@ -3,18 +3,19 @@ const assert = require('node:assert');
 const path = require('path');
 const fs = require('fs');
 const WhatsAppSessionManager = require('../src/whatsapp/session-manager');
+const store = require('../src/store');
 
-test('WhatsAppSessionManager - Multi-branch session directory isolation', (t) => {
+test('WhatsAppSessionManager - Multi-account session directory isolation', (t) => {
   const tempSessionDir = path.join(__dirname, 'temp_sessions');
   const manager = new WhatsAppSessionManager({ sessionBasePath: tempSessionDir });
 
   try {
-    const dir1 = manager.getSessionDir('tenant-1', 'branch-north');
-    const dir2 = manager.getSessionDir('tenant-1', 'branch-south');
-    const dir3 = manager.getSessionDir('tenant-2', 'branch-north');
+    const dir1 = manager.getAccountSessionDir('acc_personal');
+    const dir2 = manager.getAccountSessionDir('acc_sales');
+    const dir3 = manager.getAccountSessionDir('acc_support');
 
-    assert.notStrictEqual(dir1, dir2, 'Branches within same tenant must have distinct session directories');
-    assert.notStrictEqual(dir1, dir3, 'Same branch name across different tenants must have distinct session directories');
+    assert.notStrictEqual(dir1, dir2, 'Distinct accounts must have isolated session directories');
+    assert.notStrictEqual(dir1, dir3, 'Distinct accounts must have isolated session directories');
     assert.ok(fs.existsSync(dir1), 'Session directory 1 should be created');
     assert.ok(fs.existsSync(dir2), 'Session directory 2 should be created');
     assert.ok(fs.existsSync(dir3), 'Session directory 3 should be created');
@@ -43,11 +44,11 @@ test('WhatsAppSessionManager - Message Deduplication', (t) => {
   }
 });
 
-test('WhatsAppSessionManager - Session status reporting when disconnected', (t) => {
+test('WhatsAppSessionManager - Account status reporting when disconnected', (t) => {
   const manager = new WhatsAppSessionManager();
 
   try {
-    const status = manager.getSessionStatus('tenant-demo', 'branch-main');
+    const status = manager.getAccountStatus('acc_test');
     assert.strictEqual(status.status, 'DISCONNECTED');
     assert.strictEqual(status.phone, null);
     assert.strictEqual(status.qrDataUrl, null);
@@ -56,16 +57,44 @@ test('WhatsAppSessionManager - Session status reporting when disconnected', (t) 
   }
 });
 
-test('WhatsAppSessionManager - Event emission on manual status change', (t, done) => {
-  const manager = new WhatsAppSessionManager();
+test('Store - Multi-account chat filtering and message storage', (t) => {
+  // Save two accounts
+  store.saveAccount({ id: 'acc_sales', name: 'Sales Account' });
+  store.saveAccount({ id: 'acc_support', name: 'Support Account' });
 
-  manager.on('status', (data) => {
-    assert.strictEqual(data.tenantId, 'tenant-test');
-    assert.strictEqual(data.branchId, 'branch-1');
-    assert.strictEqual(data.status, 'DISCONNECTED');
-    manager.destroy();
-    done();
+  // Add messages for both
+  store.addMessage({
+    id: 'msg_1',
+    accountId: 'acc_sales',
+    remoteJid: '919876543210@s.whatsapp.net',
+    customerPhone: '+919876543210',
+    customerName: 'Customer A',
+    text: 'Interested in product pricing',
+    fromMe: false,
+    timestamp: new Date().toISOString()
   });
 
-  manager.disconnectSession('tenant-test', 'branch-1', false);
+  store.addMessage({
+    id: 'msg_2',
+    accountId: 'acc_support',
+    remoteJid: '919123456789@s.whatsapp.net',
+    customerPhone: '+919123456789',
+    customerName: 'Customer B',
+    text: 'Need help with login',
+    fromMe: false,
+    timestamp: new Date().toISOString()
+  });
+
+  // Verify all chats
+  const allChats = store.getChats();
+  assert.ok(allChats.length >= 2, 'Should have at least 2 chats');
+
+  // Verify filtered chats
+  const salesChats = store.getChats('acc_sales');
+  assert.strictEqual(salesChats.every(c => c.accountId === 'acc_sales'), true);
+  assert.ok(salesChats.some(c => c.remoteJid === '919876543210@s.whatsapp.net'));
+
+  const supportChats = store.getChats('acc_support');
+  assert.strictEqual(supportChats.every(c => c.accountId === 'acc_support'), true);
+  assert.ok(supportChats.some(c => c.remoteJid === '919123456789@s.whatsapp.net'));
 });
