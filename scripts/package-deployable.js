@@ -14,70 +14,78 @@ if (fs.existsSync(zipFile)) {
 }
 fs.mkdirSync(dest, { recursive: true });
 
-// Helper to copy files
-function copyFile(srcRel, destRel) {
-  const src = path.join(rootDir, srcRel);
-  const target = path.join(dest, destRel || srcRel);
+function copyFile(relPath) {
+  const src = path.join(rootDir, relPath);
+  const target = path.join(dest, relPath);
   if (fs.existsSync(src)) {
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.copyFileSync(src, target);
   }
 }
 
-// Helper to copy directory excluding node_modules, data, wa_sessions
-function copyDir(srcRel, destRel, excludePatterns = []) {
-  const src = path.join(rootDir, srcRel);
-  const target = path.join(dest, destRel || srcRel);
+function copyDir(relPath, excludeNames = ['node_modules', '.git']) {
+  const src = path.join(rootDir, relPath);
+  const target = path.join(dest, relPath);
   if (!fs.existsSync(src)) return;
 
   fs.mkdirSync(target, { recursive: true });
-  const entries = fs.readdirSync(src, { withFileTypes: true });
-
-  for (const entry of entries) {
-    if (excludePatterns.some(p => entry.name === p || entry.name.includes(p))) continue;
-    const srcPath = path.join(src, entry.name);
-    const destPath = path.join(target, entry.name);
-
-    if (entry.isDirectory()) {
-      copyDir(path.relative(rootDir, srcPath), path.relative(rootDir, destPath), excludePatterns);
-    } else {
-      fs.copyFileSync(srcPath, destPath);
+  fs.cpSync(src, target, {
+    recursive: true,
+    filter: (source) => {
+      const base = path.basename(source);
+      return !excludeNames.includes(base);
     }
-  }
+  });
 }
 
-console.log('[package] Assembling deployment files...');
-// Root files
-['app.js', 'index.js', '.env', '.env.example', '.gitignore', 'package.json', 'package-lock.json', 'worker.js', 'wrangler.jsonc'].forEach(f => copyFile(f));
+console.log('[package] Copying root files...');
+['app.js', 'index.js', '.env', '.env.example', '.gitignore', 'package.json', 'package-lock.json', 'worker.js', 'wrangler.jsonc'].forEach(copyFile);
 
-// Scripts
-copyDir('scripts', 'scripts');
+console.log('[package] Copying scripts...');
+copyDir('scripts');
 
-// Build & Dist
-copyDir('build', 'build');
-copyDir('dist', 'dist');
+console.log('[package] Copying build & dist mirrors...');
+copyDir('build');
+copyDir('dist');
 
-// Client
+console.log('[package] Copying client workspace...');
 copyFile('client/package.json');
 copyFile('client/vite.config.js');
 copyFile('client/index.html');
 copyFile('client/.env.example');
-copyDir('client/src', 'client/src');
-copyDir('client/public', 'client/public');
-copyDir('client/dist', 'client/dist');
+copyDir('client/src');
+copyDir('client/public');
+copyDir('client/dist');
 
-// Server
+console.log('[package] Copying server workspace...');
 copyFile('server/package.json');
 copyFile('server/package-lock.json');
-copyDir('server/src', 'server/src');
-copyDir('server/tests', 'server/tests');
+copyDir('server/src');
+copyDir('server/tests');
 
-// Empty runtime directories
+// Create empty runtime directories for database, media and sessions
 fs.mkdirSync(path.join(dest, 'server', 'data'), { recursive: true });
 fs.mkdirSync(path.join(dest, 'server', 'media'), { recursive: true });
 fs.mkdirSync(path.join(dest, 'server', 'wa_sessions'), { recursive: true });
 
-console.log('[package] Compressing to QuickWhatsApp-deployable.zip via PowerShell .NET ZipFile...');
+// Sanity check critical files in staging folder
+const criticalFiles = [
+  path.join(dest, 'app.js'),
+  path.join(dest, 'client', 'src', 'App.jsx'),
+  path.join(dest, 'client', 'src', 'pages', 'Dashboard.jsx'),
+  path.join(dest, 'client', 'dist', 'index.html'),
+  path.join(dest, 'server', 'src', 'app.js'),
+  path.join(dest, 'server', 'src', 'whatsapp', 'session-manager.js')
+];
+
+for (const cf of criticalFiles) {
+  if (!fs.existsSync(cf)) {
+    throw new Error(`CRITICAL FILE MISSING IN STAGING: ${cf}`);
+  }
+}
+console.log('[package] All critical files verified in staging directory!');
+
+console.log('[package] Creating QuickWhatsApp-deployable.zip via .NET ZipFile...');
 const psScript = `
 Add-Type -AssemblyName System.IO.Compression.FileSystem;
 [System.IO.Compression.ZipFile]::CreateFromDirectory('${dest.replace(/\\/g, '\\\\')}', '${zipFile.replace(/\\/g, '\\\\')}', [System.IO.Compression.CompressionLevel]::Optimal, $false);
@@ -87,4 +95,4 @@ execSync(`powershell -Command "${psScript.replace(/\n/g, ' ')}"`, { stdio: 'inhe
 
 fs.rmSync(dest, { recursive: true, force: true });
 const stats = fs.statSync(zipFile);
-console.log(`[package] Created ${zipFile} (${(stats.size / (1024 * 1024)).toFixed(2)} MB)`);
+console.log(`[package] SUCCESS: Created ${zipFile} (${(stats.size / (1024 * 1024)).toFixed(2)} MB)`);
