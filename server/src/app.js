@@ -21,7 +21,7 @@ app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 // Ensure media storage folder exists and serve media files statically
-const mediaDir = path.join(process.cwd(), 'media');
+const mediaDir = path.join(process.env.DATA_DIR || path.join(__dirname, '..'), 'media');
 if (!fs.existsSync(mediaDir)) {
   fs.mkdirSync(mediaDir, { recursive: true });
 }

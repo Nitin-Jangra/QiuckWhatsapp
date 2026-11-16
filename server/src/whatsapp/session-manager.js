@@ -103,8 +103,8 @@ function extractMessageContent(m) {
 class WhatsAppSessionManager extends EventEmitter {
   constructor(options = {}) {
     super();
-    this.sessionBasePath = options.sessionBasePath || path.join(process.cwd(), 'wa_sessions');
-    this.mediaBasePath = options.mediaBasePath || path.join(process.cwd(), 'media');
+    this.sessionBasePath = options.sessionBasePath || path.join(process.env.DATA_DIR || path.join(__dirname, '..', '..'), 'wa_sessions');
+    this.mediaBasePath = options.mediaBasePath || path.join(process.env.DATA_DIR || path.join(__dirname, '..', '..'), 'media');
     this.sessions = new Map(); // accountId -> session object
     this.processedMessageIds = new Map(); // msgId -> timestamp for deduplication
     this.destinationJidCache = new Map(); // phone/digits -> original remoteJid

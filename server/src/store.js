@@ -3,7 +3,7 @@ const path = require('path');
 
 class Store {
   constructor(options = {}) {
-    this.dataPath = options.dataPath || path.join(process.cwd(), 'data', 'wacrm-store.json');
+    this.dataPath = options.dataPath || path.join(process.env.DATA_DIR || path.join(__dirname, '..'), 'data', 'wacrm-store.json');
     this.ensureDirectory();
     this.accounts = new Map();
     this.chats = new Map(); // key: `${accountId}:${remoteJid}` -> chat summary

@@ -4,6 +4,17 @@ const connector = require('../whatsapp/connector-service');
 
 const clients = new Set();
 
+// Keep idle connections alive through proxies / Cloudflare (which drop silent streams)
+setInterval(() => {
+  for (const client of clients) {
+    try {
+      client.write(': keepalive\n\n');
+    } catch (e) {
+      clients.delete(client);
+    }
+  }
+}, 25000).unref();
+
 function broadcast(eventType, data) {
   const payload = `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
   for (const client of clients) {
@@ -26,7 +37,7 @@ router.get('/', (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
 
   clients.add(res);

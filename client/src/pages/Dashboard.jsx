@@ -46,6 +46,7 @@ export default function Dashboard() {
   const [lightboxImage, setLightboxImage] = useState(null);
 
   const messagesEndRef = useRef(null);
+  const selectedChatRef = useRef(null);
 
   // Helper phone formatter
   const formatPhone = (raw) => {
@@ -112,10 +113,8 @@ export default function Dashboard() {
   // 2. Load Chats
   const fetchChats = async () => {
     try {
-      const url = selectedAccountId && selectedAccountId !== 'all'
-        ? `${API}/api/chats?accountId=${encodeURIComponent(selectedAccountId)}`
-        : API + '/api/chats';
-      const res = await fetch(url);
+      // Always load every chat; the account filter is applied client-side (see filteredChats)
+      const res = await fetch(API + '/api/chats');
       const json = await res.json();
       if (json.success) {
         setChats(json.data);
@@ -176,12 +175,8 @@ export default function Dashboard() {
   // Initial load
   useEffect(() => {
     fetchAccounts();
-  }, []);
-
-  // Reload chats when account filter changes
-  useEffect(() => {
     fetchChats();
-  }, [selectedAccountId]);
+  }, []);
 
   // Auto-poll QR status while QR modal is active to ensure instant display
   useEffect(() => {
@@ -212,6 +207,7 @@ export default function Dashboard() {
 
   // Reload messages when selected chat changes
   useEffect(() => {
+    selectedChatRef.current = selectedChat;
     if (selectedChat) {
       fetchMessages(selectedChat);
       clearAttachment();
@@ -304,7 +300,7 @@ export default function Dashboard() {
         setSyncNotice(`Synced ${data.chatsCount || 0} chats from mobile phone`);
         setTimeout(() => setSyncNotice(''), 5000);
         fetchChats();
-        if (selectedChat) fetchMessages(selectedChat);
+        if (selectedChatRef.current) fetchMessages(selectedChatRef.current);
       } catch (err) {}
     });
 
@@ -536,6 +532,7 @@ export default function Dashboard() {
   };
 
   const filteredChats = chats.filter(c => {
+    if (selectedAccountId !== 'all' && c.accountId !== selectedAccountId) return false;
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase();
     return (
