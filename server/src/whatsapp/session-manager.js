@@ -106,6 +106,8 @@ class WhatsAppSessionManager extends EventEmitter {
     this.sessionBasePath = options.sessionBasePath || path.join(process.env.DATA_DIR || path.join(__dirname, '..', '..'), 'wa_sessions');
     this.mediaBasePath = options.mediaBasePath || path.join(process.env.DATA_DIR || path.join(__dirname, '..', '..'), 'media');
     this.sessions = new Map(); // accountId -> session object
+    this.initPromises = new Map(); // accountId -> in-flight init (prevents two sockets on one session)
+    this.waVersion = null;
     this.processedMessageIds = new Map(); // msgId -> timestamp for deduplication
     this.destinationJidCache = new Map(); // phone/digits -> original remoteJid
     this.logger = pino({ level: options.logLevel || 'silent' });
@@ -192,8 +194,8 @@ class WhatsAppSessionManager extends EventEmitter {
     const msgId = msg.key?.id;
     if (!msgId) return null;
 
-    if (this.isDuplicateMessage(msgId)) return null;
-    this.recordMessageId(msgId);
+    if (this.isDuplicateMessage(msgId, accountId)) return null;
+    this.recordMessageId(msgId, accountId);
 
     const fromMe = Boolean(msg.key?.fromMe);
 
@@ -220,8 +222,8 @@ class WhatsAppSessionManager extends EventEmitter {
     const customerPhone = cleanDigits ? `+${cleanDigits}` : remoteJid;
 
     if (cleanDigits && remoteJid) {
-      this.destinationJidCache.set(cleanDigits, remoteJid);
-      this.destinationJidCache.set(`+${cleanDigits}`, remoteJid);
+      this.destinationJidCache.set(accountId + '|' + (cleanDigits), remoteJid);
+      this.destinationJidCache.set(accountId + '|' + (`+${cleanDigits}`), remoteJid);
     }
 
     let mediaUrl = null;
@@ -250,8 +252,24 @@ class WhatsAppSessionManager extends EventEmitter {
     return messageRecord;
   }
 
-  async initAccount(accountId) {
-    if (!accountId) throw new Error('accountId is required');
+  initAccount(accountId) {
+    if (!accountId) return Promise.reject(new Error('accountId is required'));
+    const running = this.initPromises.get(accountId);
+    if (running) return running;
+    const p = this._initAccount(accountId).finally(() => this.initPromises.delete(accountId));
+    this.initPromises.set(accountId, p);
+    return p;
+  }
+
+  // WhatsApp rejects outdated client versions; fetch once and reuse for all accounts
+  async getWaVersion() {
+    if (this.waVersion && Date.now() - this.waVersion.at < 60 * 60 * 1000) return this.waVersion.version;
+    const { version } = await fetchLatestBaileysVersion().catch(() => ({}));
+    if (version) this.waVersion = { version, at: Date.now() };
+    return version;
+  }
+
+  async _initAccount(accountId) {
 
     let session = this.sessions.get(accountId);
 
@@ -283,8 +301,10 @@ class WhatsAppSessionManager extends EventEmitter {
     this.emit('status', { accountId, status: 'CONNECTING' });
 
     try {
+      const version = await this.getWaVersion();
       const sock = makeWASocket({
         auth: state,
+        ...(version && { version }),
         logger: this.logger,
         printQRInTerminal: false,
         browser: Browsers.ubuntu('Chrome'),
@@ -327,17 +347,45 @@ class WhatsAppSessionManager extends EventEmitter {
           const phone = rawPhone ? `+${rawPhone.replace(/[^0-9]/g, '')}` : null;
           const name = sock.user?.name || null;
 
+          const bare = (j) => (j || '').split(':')[0].split('@')[0];
+          const twin = [...this.sessions.values()].find(
+            s => s !== session && s.status === 'CONNECTED' && s.userInfo && bare(s.userInfo.jid) === bare(userJid)
+          );
+          if (twin) {
+            // Same WhatsApp phone number already linked under another account: unlink this duplicate socket
+            const twinAcc = store.getAccount(twin.accountId);
+            const twinName = twinAcc?.name || twin.accountId;
+            session.status = 'DISCONNECTED';
+            session.lastError = `This WhatsApp number (${phone}) is already added as "${twinName}". Each connected account must be a distinct WhatsApp phone number.`;
+            try { sock.ev.removeAllListeners(); } catch (e) {}
+            try { await sock.logout(); } catch (e) {}
+            try { sock.end(undefined); } catch (e) {}
+            session.sock = null;
+            this.clearSessionFolder(sessionDir);
+            store.saveAccount({
+              id: accountId,
+              status: 'DISCONNECTED',
+              lastError: session.lastError,
+              qrDataUrl: null
+            });
+            this.emit('status', { accountId, status: 'DISCONNECTED', error: session.lastError });
+            return;
+          }
+
           session.status = 'CONNECTED';
           session.qr = null;
           session.qrDataUrl = null;
           session.lastConnectedAt = new Date().toISOString();
+          session.lastError = null;
           session.userInfo = { jid: userJid, phone, name };
 
           store.saveAccount({
             id: accountId,
             phone,
             status: 'CONNECTED',
-            lastConnectedAt: session.lastConnectedAt
+            lastConnectedAt: session.lastConnectedAt,
+            lastError: null,
+            qrDataUrl: null
           });
 
           this.emit('status', { accountId, status: 'CONNECTED', phone, name });
@@ -358,20 +406,33 @@ class WhatsAppSessionManager extends EventEmitter {
               sock.ev.removeAllListeners();
             } catch (e) {}
             session.sock = null;
+            store.saveAccount({
+              id: accountId,
+              status: 'REAUTH_REQUIRED',
+              lastError: session.lastError,
+              qrDataUrl: null
+            });
             this.emit('status', { accountId, status: 'REAUTH_REQUIRED', error: session.lastError });
           } else {
             session.status = 'DISCONNECTED';
             session.lastError = lastDisconnect?.error?.message || 'Connection closed';
+            store.saveAccount({
+              id: accountId,
+              status: 'DISCONNECTED',
+              lastError: session.lastError,
+              qrDataUrl: null
+            });
             this.emit('status', { accountId, status: 'DISCONNECTED', error: session.lastError });
 
             const shouldReconnect = statusCode !== DisconnectReason.connectionReplaced;
             if (shouldReconnect) {
+              const delay = statusCode === DisconnectReason.restartRequired ? 300 : 4000;
               setTimeout(() => {
                 const cur = this.sessions.get(accountId);
                 if (cur && cur.status === 'DISCONNECTED') {
                   this.initAccount(accountId).catch(() => {});
                 }
-              }, 4000);
+              }, delay);
             }
           }
         }
@@ -388,7 +449,7 @@ class WhatsAppSessionManager extends EventEmitter {
             if (name && c.id) {
               store.saveContact(accountId, c.id, name);
               const clean = c.id.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
-              if (clean) this.destinationJidCache.set(clean, c.id);
+              if (clean) this.destinationJidCache.set(accountId + '|' + (clean), c.id);
             }
           }
         }
@@ -398,7 +459,7 @@ class WhatsAppSessionManager extends EventEmitter {
           for (const c of chats) {
             store.saveChat(accountId, c);
             const clean = c.id.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
-            if (clean) this.destinationJidCache.set(clean, c.id);
+            if (clean) this.destinationJidCache.set(accountId + '|' + (clean), c.id);
           }
         }
 
@@ -496,7 +557,7 @@ class WhatsAppSessionManager extends EventEmitter {
     return false;
   }
 
-  resolveDestinationJid(toPhoneOrJid) {
+  resolveDestinationJid(toPhoneOrJid, accountId = '') {
     if (toPhoneOrJid.includes('@lid')) {
       const user = toPhoneOrJid.split('@')[0].split(':')[0];
       return `${user}@lid`;
@@ -510,12 +571,8 @@ class WhatsAppSessionManager extends EventEmitter {
     }
 
     const cleanDigits = toPhoneOrJid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
-    if (this.destinationJidCache.has(cleanDigits)) {
-      return this.destinationJidCache.get(cleanDigits);
-    }
-    if (this.destinationJidCache.has(`+${cleanDigits}`)) {
-      return this.destinationJidCache.get(`+${cleanDigits}`);
-    }
+    const cached = this.destinationJidCache.get(`${accountId}|${cleanDigits}`);
+    if (cached) return cached;
     if (!cleanDigits) {
       throw new Error(`Invalid destination phone number: "${toPhoneOrJid}"`);
     }
@@ -532,11 +589,11 @@ class WhatsAppSessionManager extends EventEmitter {
       throw new Error(`WhatsApp account "${accountId}" is not connected. Scan QR code to connect first.`);
     }
 
-    const jid = this.resolveDestinationJid(toPhoneOrJid);
+    const jid = this.resolveDestinationJid(toPhoneOrJid, accountId);
     const result = await session.sock.sendMessage(jid, { text });
     const sentMessageId = result?.key?.id;
     if (sentMessageId) {
-      this.recordMessageId(sentMessageId);
+      this.recordMessageId(sentMessageId, accountId);
     }
 
     const cleanDigits = jid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
@@ -572,7 +629,7 @@ class WhatsAppSessionManager extends EventEmitter {
       throw new Error(`WhatsApp account "${accountId}" is not connected. Scan QR code to connect first.`);
     }
 
-    const jid = this.resolveDestinationJid(toPhoneOrJid);
+    const jid = this.resolveDestinationJid(toPhoneOrJid, accountId);
     const textCaption = caption ? caption.trim() : '';
 
     let sendOptions = {};
@@ -593,7 +650,7 @@ class WhatsAppSessionManager extends EventEmitter {
 
     const result = await session.sock.sendMessage(jid, sendOptions);
     const sentMessageId = result?.key?.id || `sent_${Date.now()}`;
-    this.recordMessageId(sentMessageId);
+    this.recordMessageId(sentMessageId, accountId);
 
     const ext = getMediaExtension(mimetype, mediaType);
     const safeMsgId = sentMessageId.replace(/[^a-zA-Z0-9_-]/g, '_');
@@ -666,12 +723,12 @@ class WhatsAppSessionManager extends EventEmitter {
     } catch (e) {}
   }
 
-  isDuplicateMessage(messageId) {
-    return this.processedMessageIds.has(messageId);
+  isDuplicateMessage(messageId, accountId = '') {
+    return this.processedMessageIds.has(`${accountId}:${messageId}`);
   }
 
-  recordMessageId(messageId) {
-    this.processedMessageIds.set(messageId, Date.now());
+  recordMessageId(messageId, accountId = '') {
+    this.processedMessageIds.set(`${accountId}:${messageId}`, Date.now());
   }
 
   cleanupDeduplicationCache() {
@@ -688,11 +745,14 @@ class WhatsAppSessionManager extends EventEmitter {
     const accounts = store.getAccounts();
     for (const acc of accounts) {
       const dir = path.join(this.sessionBasePath, acc.id);
-      if (fs.existsSync(dir)) {
-        console.log(`[WaCRM] Restoring session for account: ${acc.name} (${acc.id})`);
+      const credsFile = path.join(dir, 'creds.json');
+      if (fs.existsSync(credsFile)) {
+        console.log(`[WaCRM] Restoring authenticated WhatsApp session for: ${acc.name} (${acc.id})`);
         this.initAccount(acc.id).catch(err => {
           console.warn(`[WaCRM] Session auto-restore failed for ${acc.id}:`, err.message);
         });
+        // Stagger logins; WhatsApp can throttle many simultaneous connections
+        await new Promise(r => setTimeout(r, 2000));
       }
     }
   }

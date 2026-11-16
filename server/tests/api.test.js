@@ -1,5 +1,10 @@
 const test = require('node:test');
 const assert = require('node:assert');
+const os = require('os');
+const fs0 = require('fs');
+const nodePath = require('path');
+// Isolate tests from the real data store
+process.env.DATA_DIR = fs0.mkdtempSync(nodePath.join(os.tmpdir(), 'wacrm-test-'));
 process.env.NODE_ENV = 'test';
 const app = require('../src/app');
 

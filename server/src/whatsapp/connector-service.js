@@ -1,10 +1,8 @@
-const path = require('path');
 const WhatsAppSessionManager = require('./session-manager');
 
-const sessionBasePath = process.env.WA_SESSION_PATH || path.join(process.cwd(), 'wa_sessions');
-
+// Session folder defaults to <DATA_DIR or server>/wa_sessions; override with WA_SESSION_PATH
 const connector = new WhatsAppSessionManager({
-  sessionBasePath,
+  sessionBasePath: process.env.WA_SESSION_PATH || undefined,
   logLevel: process.env.NODE_ENV === 'production' ? 'info' : 'warn'
 });
 

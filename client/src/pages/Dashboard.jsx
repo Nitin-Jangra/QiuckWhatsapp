@@ -480,8 +480,8 @@ export default function Dashboard() {
       const json = await safeJson(res);
       if (json.success) {
         setNewAccountName('');
-        await fetchAccounts();
         setQrModalAccount(json.data);
+        await fetchAccounts();
       } else {
         alert(json.error || 'Failed to create account');
       }
@@ -495,7 +495,9 @@ export default function Dashboard() {
   const handleConnectAccount = async (accId) => {
     try {
       const acc = accounts.find(a => a.id === accId);
-      if (acc) setQrModalAccount(acc);
+      if (acc) {
+        setQrModalAccount({ ...acc, status: 'CONNECTING', lastError: null });
+      }
       const res = await fetch(endpoint(`/api/accounts/${accId}/connect`), { method: 'POST' });
       const json = await safeJson(res);
       if (!json.success) {
@@ -575,6 +577,9 @@ export default function Dashboard() {
       await fetchChats();
 
       const account = accounts.find(a => a.id === newChatAccountId);
+      if (selectedAccountId !== 'all' && selectedAccountId !== newChatAccountId) {
+        setSelectedAccountId(newChatAccountId);
+      }
       setSelectedChat({
         id: `${newChatAccountId}:${json.data.remoteJid}`,
         accountId: newChatAccountId,
@@ -670,7 +675,10 @@ export default function Dashboard() {
             {/* Add Account Button */}
             <button
               className="btn btn-sm btn-msquare-primary d-flex align-items-center gap-1 py-1 px-3"
-              onClick={() => setShowAccountsModal(true)}
+              onClick={() => {
+                setQrModalAccount(null);
+                setShowAccountsModal(true);
+              }}
             >
               <i className="bi bi-plus-lg"></i>
               <span className="d-none d-sm-inline small">Add Account</span>
@@ -782,11 +790,14 @@ export default function Dashboard() {
               title="Start New Chat"
               onClick={() => {
                 if (accounts.length === 0) {
+                  setQrModalAccount(null);
                   setShowAccountsModal(true);
                   return;
                 }
-                const firstConnected = accounts.find(a => a.status === 'CONNECTED') || accounts[0];
-                setNewChatAccountId(firstConnected ? firstConnected.id : '');
+                const defaultAcc = (selectedAccountId !== 'all' ? accounts.find(a => a.id === selectedAccountId && a.status === 'CONNECTED') : null)
+                  || accounts.find(a => a.status === 'CONNECTED')
+                  || accounts[0];
+                setNewChatAccountId(defaultAcc ? defaultAcc.id : '');
                 setShowNewChatModal(true);
               }}
             >
@@ -804,7 +815,10 @@ export default function Dashboard() {
                 {accounts.length === 0 ? (
                   <button
                     className="btn btn-sm btn-msquare-primary mt-1"
-                    onClick={() => setShowAccountsModal(true)}
+                    onClick={() => {
+                      setQrModalAccount(null);
+                      setShowAccountsModal(true);
+                    }}
                   >
                     + Add WhatsApp Account
                   </button>
@@ -820,8 +834,10 @@ export default function Dashboard() {
                     <button
                       className="btn btn-sm btn-outline-success"
                       onClick={() => {
-                        const firstConnected = accounts.find(a => a.status === 'CONNECTED') || accounts[0];
-                        setNewChatAccountId(firstConnected ? firstConnected.id : '');
+                        const defaultAcc = (selectedAccountId !== 'all' ? accounts.find(a => a.id === selectedAccountId && a.status === 'CONNECTED') : null)
+                          || accounts.find(a => a.status === 'CONNECTED')
+                          || accounts[0];
+                        setNewChatAccountId(defaultAcc ? defaultAcc.id : '');
                         setShowNewChatModal(true);
                       }}
                     >
@@ -1274,14 +1290,26 @@ export default function Dashboard() {
                   </form>
                 </div>
 
-                {/* Section 2: Active QR Scanner if an account is in SCAN_QR state */}
+                {/* Section 2: Active QR Scanner / Pairing Card */}
                 {qrModalAccount && (
                   <div className="p-4 rounded border border-success-subtle mb-4 text-center" style={{ backgroundColor: 'var(--bg-card-header)' }}>
-                    <h6 className="fw-bold text-success mb-2">
-                      Pair Account: {qrModalAccount.name}
-                    </h6>
+                    <div className="d-flex justify-content-between align-items-center mb-2">
+                      <h6 className="fw-bold mb-0 text-success">
+                        <i className="bi bi-whatsapp me-2"></i>
+                        Pair Account: {qrModalAccount.name}
+                      </h6>
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-link text-secondary text-decoration-none p-0"
+                        onClick={() => setQrModalAccount(null)}
+                        title="Close pairing view"
+                      >
+                        <i className="bi bi-x-circle me-1"></i>Dismiss
+                      </button>
+                    </div>
+
                     <p className="small text-muted mb-3">
-                      Open WhatsApp on your phone → Settings / Menu → <strong>Linked Devices</strong> → <strong>Link a Device</strong> → Point camera at this QR code:
+                      Open WhatsApp on phone → Settings / Menu → <strong>Linked Devices</strong> → <strong>Link a Device</strong> → Point camera at this QR code:
                     </p>
 
                     {qrModalAccount.status === 'CONNECTED' ? (
@@ -1289,7 +1317,7 @@ export default function Dashboard() {
                         <i className="bi bi-check-circle-fill me-2 fs-5"></i>
                         <strong>Connected Successfully!</strong> Phone: {qrModalAccount.phone || 'Ready'}
                       </div>
-                    ) : qrModalAccount.qrDataUrl ? (
+                    ) : (qrModalAccount.status === 'SCAN_QR' && qrModalAccount.qrDataUrl) ? (
                       <div className="d-flex flex-column align-items-center">
                         <div className="p-2 bg-white rounded shadow-sm d-inline-block mb-3">
                           <img
@@ -1302,18 +1330,38 @@ export default function Dashboard() {
                           <span className="spinner-grow spinner-grow-sm me-1"></span>
                           Waiting for phone to scan...
                         </span>
+                        <div className="small text-muted mt-2">
+                          Note: To run multiple accounts simultaneously, scan with a distinct WhatsApp phone number.
+                        </div>
+                      </div>
+                    ) : (qrModalAccount.lastError || qrModalAccount.status === 'DISCONNECTED' || qrModalAccount.status === 'REAUTH_REQUIRED' || qrModalAccount.status === 'ERROR') ? (
+                      <div className="alert alert-danger py-2 px-3 d-inline-block text-start mb-0" style={{ maxWidth: '520px' }}>
+                        <div className="d-flex align-items-start gap-2">
+                          <i className="bi bi-exclamation-triangle-fill fs-5 text-danger mt-1"></i>
+                          <div>
+                            <strong>Connection Notice:</strong>
+                            <div className="small mt-1">{qrModalAccount.lastError || 'WhatsApp connection closed or pairing was canceled.'}</div>
+                            <button
+                              type="button"
+                              className="btn btn-sm btn-outline-danger mt-2 py-0 px-2"
+                              onClick={() => handleConnectAccount(qrModalAccount.id)}
+                            >
+                              <i className="bi bi-arrow-clockwise me-1"></i>Generate New QR Code
+                            </button>
+                          </div>
+                        </div>
                       </div>
                     ) : (
                       <div className="py-4">
                         <div className="spinner-border text-success mb-2" role="status"></div>
-                        <p className="small text-muted">Initializing WhatsApp socket and generating QR code...</p>
+                        <p className="small text-muted mb-0">Connecting to WhatsApp servers & generating QR code...</p>
                       </div>
                     )}
                   </div>
                 )}
 
                 {/* Section 3: Existing Accounts Table */}
-                <h6 className="fw-bold mb-3">Connected Accounts ({accounts.length})</h6>
+                <h6 className="fw-bold mb-3">Linked Accounts ({accounts.length})</h6>
                 {loadingAccounts ? (
                   <div className="text-center py-3">
                     <div className="spinner-border text-primary spinner-border-sm" role="status"></div>
@@ -1357,6 +1405,12 @@ export default function Dashboard() {
                                     Disconnected
                                   </span>
                                 )}
+                                {acc.lastError && !isConn && (
+                                  <div className="text-danger small mt-1" style={{ fontSize: '0.72rem', maxWidth: '280px' }} title={acc.lastError}>
+                                    <i className="bi bi-info-circle me-1"></i>
+                                    {acc.lastError}
+                                  </div>
+                                )}
                               </td>
                               <td className="text-end">
                                 <div className="btn-group btn-group-sm">
@@ -1366,7 +1420,7 @@ export default function Dashboard() {
                                       onClick={() => handleConnectAccount(acc.id)}
                                       title="Scan QR / Reconnect"
                                     >
-                                      <i className="bi bi-qr-code"></i> Connect
+                                      <i className="bi bi-qr-code"></i> {acc.status === 'SCAN_QR' ? 'View QR' : 'Pair'}
                                     </button>
                                   )}
                                   {isConn && (

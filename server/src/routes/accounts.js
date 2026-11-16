@@ -10,10 +10,11 @@ router.get('/', (req, res) => {
     const status = connector.getAccountStatus(acc.id);
     return {
       ...acc,
-      status: status.status,
+      status: status.status || acc.status || 'DISCONNECTED',
       phone: status.phone || acc.phone || null,
-      qrDataUrl: status.qrDataUrl || null,
-      lastError: status.lastError || null
+      name: status.name || acc.name,
+      qrDataUrl: status.status === 'SCAN_QR' ? status.qrDataUrl : null,
+      lastError: status.lastError || acc.lastError || null
     };
   });
   res.json({ success: true, data });
@@ -63,7 +64,13 @@ router.get('/:id/status', (req, res) => {
     success: true,
     data: {
       ...account,
-      ...status
+      ...status,
+      id: account.id,
+      name: account.name,
+      status: status.status || account.status || 'DISCONNECTED',
+      phone: status.phone || account.phone || null,
+      qrDataUrl: status.status === 'SCAN_QR' ? status.qrDataUrl : null,
+      lastError: status.lastError || account.lastError || null
     }
   });
 });
