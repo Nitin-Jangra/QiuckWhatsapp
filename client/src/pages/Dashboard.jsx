@@ -1,10 +1,35 @@
 import React, { useState, useEffect, useRef } from 'react';
 
-// Backend base URL. Empty in dev (Vite proxies /api); set VITE_API_URL when the API is hosted elsewhere.
-const API = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
-const media = (u) => (u && u.startsWith('/') ? API + u : u);
+// Safe JSON parser to guard against non-JSON (HTML 404/502/empty) responses
+const safeJson = async (res) => {
+  try {
+    const text = await res.text();
+    return JSON.parse(text);
+  } catch (err) {
+    return {
+      success: false,
+      error: `Server returned non-JSON response (HTTP ${res.status}: ${res.statusText || 'Error'})`
+    };
+  }
+};
+
+const getStoredApi = () => {
+  if (typeof window !== 'undefined') {
+    const stored = localStorage.getItem('wacrm_api_url');
+    if (stored) return stored.replace(/\/$/, '');
+  }
+  return (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
+};
 
 export default function Dashboard() {
+  // Backend API URL (can be customized via settings or VITE_API_URL)
+  const [apiUrl, setApiUrl] = useState(getStoredApi());
+  const [showApiSettingsModal, setShowApiSettingsModal] = useState(false);
+  const [tempApiUrl, setTempApiUrl] = useState(apiUrl);
+  const [apiErrorNotice, setApiErrorNotice] = useState('');
+
+  const endpoint = (path) => (apiUrl ? `${apiUrl}${path}` : path);
+  const media = (u) => (u && u.startsWith('/') ? (apiUrl ? `${apiUrl}${u}` : u) : u);
   // Accounts state
   const [accounts, setAccounts] = useState([]);
   const [selectedAccountId, setSelectedAccountId] = useState('all'); // 'all' or specific accountId
@@ -94,16 +119,20 @@ export default function Dashboard() {
   // 1. Load Accounts
   const fetchAccounts = async () => {
     try {
-      const res = await fetch(API + '/api/accounts');
-      const json = await res.json();
+      const res = await fetch(endpoint('/api/accounts'));
+      const json = await safeJson(res);
       if (json.success) {
         setAccounts(json.data);
+        setApiErrorNotice('');
         if (qrModalAccount) {
           const updated = json.data.find(a => a.id === qrModalAccount.id);
           if (updated) setQrModalAccount(updated);
         }
+      } else {
+        setApiErrorNotice(json.error || 'Could not connect to WhatsApp backend server.');
       }
     } catch (err) {
+      setApiErrorNotice('Could not connect to WhatsApp backend: ' + err.message);
       console.error('Failed to fetch accounts:', err);
     } finally {
       setLoadingAccounts(false);
@@ -114,8 +143,8 @@ export default function Dashboard() {
   const fetchChats = async () => {
     try {
       // Always load every chat; the account filter is applied client-side (see filteredChats)
-      const res = await fetch(API + '/api/chats');
-      const json = await res.json();
+      const res = await fetch(endpoint('/api/chats'));
+      const json = await safeJson(res);
       if (json.success) {
         setChats(json.data);
       }
@@ -130,11 +159,13 @@ export default function Dashboard() {
     setLoadingMessages(true);
     setSendError('');
     try {
-      const url = `${API}/api/chats/messages?accountId=${encodeURIComponent(chat.accountId)}&remoteJid=${encodeURIComponent(chat.remoteJid)}`;
+      const url = endpoint(`/api/chats/messages?accountId=${encodeURIComponent(chat.accountId)}&remoteJid=${encodeURIComponent(chat.remoteJid)}`);
       const res = await fetch(url);
-      const json = await res.json();
+      const json = await safeJson(res);
       if (json.success) {
         setMessages(json.data);
+      } else {
+        setSendError(json.error || 'Failed to load messages');
       }
     } catch (err) {
       console.error('Failed to fetch messages:', err);
@@ -148,7 +179,7 @@ export default function Dashboard() {
     setIsManualSyncing(true);
     try {
       const targetAccountId = selectedChat?.accountId || (selectedAccountId !== 'all' ? selectedAccountId : null);
-      await fetch(API + '/api/chats/sync', {
+      await fetch(endpoint('/api/chats/sync'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -186,8 +217,8 @@ export default function Dashboard() {
 
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`${API}/api/accounts/${qrModalAccount.id}/status`);
-        const json = await res.json();
+        const res = await fetch(endpoint(`/api/accounts/${qrModalAccount.id}/status`));
+        const json = await safeJson(res);
         if (json.success && json.data) {
           setQrModalAccount(prev => {
             if (!prev || prev.id !== json.data.id) return prev;
@@ -203,7 +234,7 @@ export default function Dashboard() {
     }, 1500);
 
     return () => clearInterval(interval);
-  }, [showAccountsModal, qrModalAccount?.id, qrModalAccount?.status]);
+  }, [showAccountsModal, qrModalAccount?.id, qrModalAccount?.status, apiUrl]);
 
   // Reload messages when selected chat changes
   useEffect(() => {
@@ -218,7 +249,7 @@ export default function Dashboard() {
 
   // 5. Real-time SSE listener
   useEffect(() => {
-    const sse = new EventSource(API + '/api/events');
+    const sse = new EventSource(endpoint('/api/events'));
 
     sse.addEventListener('status', (e) => {
       try {
@@ -369,7 +400,7 @@ export default function Dashboard() {
     try {
       if (hasMedia) {
         const mediaType = getMediaTypeFromFile(selectedFile);
-        const res = await fetch(API + '/api/messages/send-media', {
+        const res = await fetch(endpoint('/api/messages/send-media'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -384,7 +415,7 @@ export default function Dashboard() {
           })
         });
 
-        const json = await res.json();
+        const json = await safeJson(res);
         if (!json.success) {
           throw new Error(json.error || 'Failed to send media');
         }
@@ -393,7 +424,7 @@ export default function Dashboard() {
         setReplyText('');
         fetchChats();
       } else {
-        const res = await fetch(API + '/api/messages/send', {
+        const res = await fetch(endpoint('/api/messages/send'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -404,7 +435,7 @@ export default function Dashboard() {
           })
         });
 
-        const json = await res.json();
+        const json = await safeJson(res);
         if (!json.success) {
           throw new Error(json.error || 'Failed to send message');
         }
@@ -426,16 +457,18 @@ export default function Dashboard() {
 
     setIsCreatingAccount(true);
     try {
-      const res = await fetch(API + '/api/accounts', {
+      const res = await fetch(endpoint('/api/accounts'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: newAccountName.trim() })
       });
-      const json = await res.json();
+      const json = await safeJson(res);
       if (json.success) {
         setNewAccountName('');
         await fetchAccounts();
         setQrModalAccount(json.data);
+      } else {
+        alert(json.error || 'Failed to create account');
       }
     } catch (err) {
       alert('Error creating account: ' + err.message);
@@ -448,7 +481,11 @@ export default function Dashboard() {
     try {
       const acc = accounts.find(a => a.id === accId);
       if (acc) setQrModalAccount(acc);
-      await fetch(`${API}/api/accounts/${accId}/connect`, { method: 'POST' });
+      const res = await fetch(endpoint(`/api/accounts/${accId}/connect`), { method: 'POST' });
+      const json = await safeJson(res);
+      if (!json.success) {
+        alert(json.error || 'Failed to connect');
+      }
       fetchAccounts();
     } catch (err) {
       alert('Failed to connect: ' + err.message);
@@ -458,11 +495,15 @@ export default function Dashboard() {
   const handleDisconnectAccount = async (accId, logout = false) => {
     if (!confirm(logout ? 'Are you sure you want to unlink and log out this WhatsApp account?' : 'Disconnect session?')) return;
     try {
-      await fetch(`${API}/api/accounts/${accId}/disconnect`, {
+      const res = await fetch(endpoint(`/api/accounts/${accId}/disconnect`), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ logout })
       });
+      const json = await safeJson(res);
+      if (!json.success) {
+        alert(json.error || 'Failed to disconnect');
+      }
       fetchAccounts();
     } catch (err) {
       alert('Failed to disconnect: ' + err.message);
@@ -472,7 +513,11 @@ export default function Dashboard() {
   const handleDeleteAccount = async (accId) => {
     if (!confirm('Are you sure you want to permanently delete this account? All session credentials and message history will be removed.')) return;
     try {
-      await fetch(`${API}/api/accounts/${accId}`, { method: 'DELETE' });
+      const res = await fetch(endpoint(`/api/accounts/${accId}`), { method: 'DELETE' });
+      const json = await safeJson(res);
+      if (!json.success) {
+        alert(json.error || 'Failed to delete account');
+      }
       if (selectedAccountId === accId) setSelectedAccountId('all');
       if (selectedChat?.accountId === accId) setSelectedChat(null);
       fetchAccounts();
@@ -496,7 +541,7 @@ export default function Dashboard() {
 
     setIsStartingNewChat(true);
     try {
-      const res = await fetch(API + '/api/messages/send', {
+      const res = await fetch(endpoint('/api/messages/send'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -505,7 +550,7 @@ export default function Dashboard() {
           text: newChatText.trim()
         })
       });
-      const json = await res.json();
+      const json = await safeJson(res);
       if (!json.success) {
         throw new Error(json.error || 'Failed to send initial message');
       }
@@ -595,6 +640,18 @@ export default function Dashboard() {
               <span className="badge bg-secondary rounded-pill">{accounts.length}</span>
             </button>
 
+            {/* Server Settings Button */}
+            <button
+              className={`btn btn-sm ${apiUrl ? 'btn-outline-secondary' : 'btn-outline-warning'} d-flex align-items-center gap-1 py-1 px-2`}
+              onClick={() => { setTempApiUrl(apiUrl); setShowApiSettingsModal(true); }}
+              title="Configure WhatsApp Backend Server URL"
+            >
+              <i className="bi bi-hdd-network"></i>
+              <span className="d-none d-xl-inline small">
+                {apiUrl ? 'Server: Custom' : 'Server API'}
+              </span>
+            </button>
+
             {/* Add Account Button */}
             <button
               className="btn btn-sm btn-msquare-primary d-flex align-items-center gap-1 py-1 px-3"
@@ -606,6 +663,22 @@ export default function Dashboard() {
           </div>
         </div>
       </header>
+
+      {/* Backend Disconnected Alert Banner */}
+      {apiErrorNotice && (
+        <div className="alert alert-warning py-2 px-3 m-2 d-flex justify-content-between align-items-center small mb-0 rounded shadow-sm">
+          <div>
+            <i className="bi bi-exclamation-triangle-fill text-warning me-2"></i>
+            <strong>Backend Connection:</strong> {apiErrorNotice}
+          </div>
+          <button
+            className="btn btn-sm btn-dark py-0 px-2 ms-2"
+            onClick={() => { setTempApiUrl(apiUrl); setShowApiSettingsModal(true); }}
+          >
+            Configure Server URL
+          </button>
+        </div>
+      )}
 
       {/* Main Container */}
       <div className={`wa-main ${selectedChat ? 'has-chat' : ''}`}>
@@ -1415,6 +1488,93 @@ export default function Dashboard() {
                   </button>
                 </div>
               </form>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Backend Server Settings Modal */}
+      {showApiSettingsModal && (
+        <div className="modal show d-block" style={{ backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 1060 }}>
+          <div className="modal-dialog modal-dialog-centered">
+            <div className="modal-content shadow-lg border-0">
+              <div className="modal-header border-bottom py-2">
+                <h6 className="modal-title fw-bold">
+                  <i className="bi bi-hdd-network text-primary me-2"></i>
+                  WhatsApp Server Settings
+                </h6>
+                <button
+                  type="button"
+                  className="btn-close"
+                  onClick={() => setShowApiSettingsModal(false)}
+                ></button>
+              </div>
+              <div className="modal-body p-3">
+                <p className="text-muted small mb-3">
+                  Enter the URL where your Node.js WhatsApp backend is running (e.g. Render, Railway, ngrok, or local).
+                  Leave blank to use default / same-origin proxy.
+                </p>
+                <div className="mb-3">
+                  <label className="form-label small fw-semibold">Backend Server URL</label>
+                  <input
+                    type="url"
+                    className="form-control form-control-sm"
+                    placeholder="https://your-backend.onrender.com (or http://localhost:5000)"
+                    value={tempApiUrl}
+                    onChange={e => setTempApiUrl(e.target.value)}
+                  />
+                  <div className="form-text" style={{ fontSize: '0.75rem' }}>
+                    Tip: If running backend locally, you can use ngrok (<code>ngrok http 5000</code>) or enter your hosted server URL.
+                  </div>
+                </div>
+              </div>
+              <div className="modal-footer border-top py-2">
+                {apiUrl && (
+                  <button
+                    type="button"
+                    className="btn btn-outline-danger btn-sm me-auto"
+                    onClick={() => {
+                      localStorage.removeItem('wacrm_api_url');
+                      setApiUrl('');
+                      setTempApiUrl('');
+                      setShowApiSettingsModal(false);
+                      setTimeout(() => {
+                        fetchAccounts();
+                        fetchChats();
+                      }, 100);
+                    }}
+                  >
+                    Reset to Default
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  onClick={() => setShowApiSettingsModal(false)}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary btn-sm"
+                  onClick={() => {
+                    const cleaned = tempApiUrl.trim().replace(/\/$/, '');
+                    if (cleaned) {
+                      localStorage.setItem('wacrm_api_url', cleaned);
+                    } else {
+                      localStorage.removeItem('wacrm_api_url');
+                    }
+                    setApiUrl(cleaned);
+                    setShowApiSettingsModal(false);
+                    setTimeout(() => {
+                      fetchAccounts();
+                      fetchChats();
+                    }, 100);
+                  }}
+                >
+                  Save & Connect
+                </button>
+              </div>
             </div>
           </div>
         </div>
