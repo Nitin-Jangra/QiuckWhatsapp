@@ -63,18 +63,23 @@ app.get('/api/health', (req, res) => {
 });
 app.get('/health', (req, res) => res.redirect('/api/health'));
 
-// Production: serve built React frontend from client/dist if present
-const clientDist = path.join(__dirname, '../../client/dist');
-const prototypePublic = path.join(__dirname, '../public');
+// Production: serve built React frontend if present
+const possibleStaticDirs = [
+  path.join(__dirname, '../../client/dist'),
+  path.join(__dirname, '../../build'),
+  path.join(__dirname, '../../dist'),
+  path.join(__dirname, '../public')
+];
+const staticDir = possibleStaticDirs.find(d => fs.existsSync(path.join(d, 'index.html')));
 
-if (fs.existsSync(clientDist)) {
-  app.use(express.static(clientDist));
+if (staticDir) {
+  app.use(express.static(staticDir));
   app.get('*', (req, res, next) => {
-    if (req.path.startsWith('/api')) return next();
-    res.sendFile(path.join(clientDist, 'index.html'));
+    if (req.path.startsWith('/api') || req.path.startsWith('/media') || req.path.startsWith('/events') || req.path.startsWith('/accounts') || req.path.startsWith('/chats')) {
+      return next();
+    }
+    res.sendFile(path.join(staticDir, 'index.html'));
   });
-} else if (fs.existsSync(prototypePublic)) {
-  app.use(express.static(prototypePublic));
 }
 
 let server = null;
