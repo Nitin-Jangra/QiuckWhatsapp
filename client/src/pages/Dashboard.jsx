@@ -13,12 +13,21 @@ const safeJson = async (res) => {
   }
 };
 
+const cleanBaseUrl = (url) => {
+  if (!url) return '';
+  let cleaned = url.trim().replace(/\/$/, '');
+  if (cleaned.endsWith('/api')) {
+    cleaned = cleaned.slice(0, -4);
+  }
+  return cleaned.replace(/\/$/, '');
+};
+
 const getStoredApi = () => {
   if (typeof window !== 'undefined') {
     const stored = localStorage.getItem('wacrm_api_url');
-    if (stored) return stored.replace(/\/$/, '');
+    if (stored) return cleanBaseUrl(stored);
   }
-  return (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
+  return cleanBaseUrl(import.meta.env.VITE_API_URL || '');
 };
 
 export default function Dashboard() {
@@ -28,8 +37,13 @@ export default function Dashboard() {
   const [tempApiUrl, setTempApiUrl] = useState(apiUrl);
   const [apiErrorNotice, setApiErrorNotice] = useState('');
 
-  const endpoint = (path) => (apiUrl ? `${apiUrl}${path}` : path);
-  const media = (u) => (u && u.startsWith('/') ? (apiUrl ? `${apiUrl}${u}` : u) : u);
+  const endpoint = (path) => {
+    if (!apiUrl) return path;
+    const base = cleanBaseUrl(apiUrl);
+    const p = path.startsWith('/') ? path : `/${path}`;
+    return `${base}${p}`;
+  };
+  const media = (u) => (u && u.startsWith('/') ? (apiUrl ? `${cleanBaseUrl(apiUrl)}${u}` : u) : u);
   // Accounts state
   const [accounts, setAccounts] = useState([]);
   const [selectedAccountId, setSelectedAccountId] = useState('all'); // 'all' or specific accountId
@@ -118,8 +132,9 @@ export default function Dashboard() {
 
   // 1. Load Accounts
   const fetchAccounts = async () => {
+    const targetUrl = endpoint('/api/accounts');
     try {
-      const res = await fetch(endpoint('/api/accounts'));
+      const res = await fetch(targetUrl);
       const json = await safeJson(res);
       if (json.success) {
         setAccounts(json.data);
@@ -129,10 +144,10 @@ export default function Dashboard() {
           if (updated) setQrModalAccount(updated);
         }
       } else {
-        setApiErrorNotice(json.error || 'Could not connect to WhatsApp backend server.');
+        setApiErrorNotice(`${json.error || 'Server error'} (Target: ${targetUrl})`);
       }
     } catch (err) {
-      setApiErrorNotice('Could not connect to WhatsApp backend: ' + err.message);
+      setApiErrorNotice(`Could not reach ${targetUrl}: ${err.message}`);
       console.error('Failed to fetch accounts:', err);
     } finally {
       setLoadingAccounts(false);

@@ -20,19 +20,37 @@ app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
+// Normalize duplicate /api prefixes
+app.use((req, res, next) => {
+  if (req.url.startsWith('/api/api/')) {
+    req.url = req.url.replace('/api/api/', '/api/');
+  }
+  next();
+});
+
 // Ensure media storage folder exists and serve media files statically
 const mediaDir = path.join(process.env.DATA_DIR || path.join(__dirname, '..'), 'media');
 if (!fs.existsSync(mediaDir)) {
   fs.mkdirSync(mediaDir, { recursive: true });
 }
 app.use('/api/media', express.static(mediaDir));
+app.use('/media', express.static(mediaDir));
 
-// Core API Routes
+// Core API Routes (supporting both /api/path and /path)
 app.use('/api/accounts', accountsRoutes);
+app.use('/accounts', accountsRoutes);
+
 app.use('/api/chats', chatsRoutes);
+app.use('/chats', chatsRoutes);
+
 app.use('/api/messages', chatsRoutes);
+app.use('/messages', chatsRoutes);
+
 app.use('/api/events', eventsRoutes);
+app.use('/events', eventsRoutes);
+
 app.use('/api/whatsapp', whatsappRoutes);
+app.use('/whatsapp', whatsappRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -43,6 +61,7 @@ app.get('/api/health', (req, res) => {
     uptime: process.uptime()
   });
 });
+app.get('/health', (req, res) => res.redirect('/api/health'));
 
 // Production: serve built React frontend from client/dist if present
 const clientDist = path.join(__dirname, '../../client/dist');
