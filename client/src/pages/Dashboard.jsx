@@ -1,5 +1,9 @@
 import React, { useState, useEffect, useRef } from 'react';
 
+// Backend base URL. Empty in dev (Vite proxies /api); set VITE_API_URL when the API is hosted elsewhere.
+const API = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
+const media = (u) => (u && u.startsWith('/') ? API + u : u);
+
 export default function Dashboard() {
   // Accounts state
   const [accounts, setAccounts] = useState([]);
@@ -89,7 +93,7 @@ export default function Dashboard() {
   // 1. Load Accounts
   const fetchAccounts = async () => {
     try {
-      const res = await fetch('/api/accounts');
+      const res = await fetch(API + '/api/accounts');
       const json = await res.json();
       if (json.success) {
         setAccounts(json.data);
@@ -109,8 +113,8 @@ export default function Dashboard() {
   const fetchChats = async () => {
     try {
       const url = selectedAccountId && selectedAccountId !== 'all'
-        ? `/api/chats?accountId=${encodeURIComponent(selectedAccountId)}`
-        : '/api/chats';
+        ? `${API}/api/chats?accountId=${encodeURIComponent(selectedAccountId)}`
+        : API + '/api/chats';
       const res = await fetch(url);
       const json = await res.json();
       if (json.success) {
@@ -127,7 +131,7 @@ export default function Dashboard() {
     setLoadingMessages(true);
     setSendError('');
     try {
-      const url = `/api/chats/messages?accountId=${encodeURIComponent(chat.accountId)}&remoteJid=${encodeURIComponent(chat.remoteJid)}`;
+      const url = `${API}/api/chats/messages?accountId=${encodeURIComponent(chat.accountId)}&remoteJid=${encodeURIComponent(chat.remoteJid)}`;
       const res = await fetch(url);
       const json = await res.json();
       if (json.success) {
@@ -145,7 +149,7 @@ export default function Dashboard() {
     setIsManualSyncing(true);
     try {
       const targetAccountId = selectedChat?.accountId || (selectedAccountId !== 'all' ? selectedAccountId : null);
-      await fetch('/api/chats/sync', {
+      await fetch(API + '/api/chats/sync', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -187,7 +191,7 @@ export default function Dashboard() {
 
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`/api/accounts/${qrModalAccount.id}/status`);
+        const res = await fetch(`${API}/api/accounts/${qrModalAccount.id}/status`);
         const json = await res.json();
         if (json.success && json.data) {
           setQrModalAccount(prev => {
@@ -218,7 +222,7 @@ export default function Dashboard() {
 
   // 5. Real-time SSE listener
   useEffect(() => {
-    const sse = new EventSource('/api/events');
+    const sse = new EventSource(API + '/api/events');
 
     sse.addEventListener('status', (e) => {
       try {
@@ -369,7 +373,7 @@ export default function Dashboard() {
     try {
       if (hasMedia) {
         const mediaType = getMediaTypeFromFile(selectedFile);
-        const res = await fetch('/api/messages/send-media', {
+        const res = await fetch(API + '/api/messages/send-media', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -393,7 +397,7 @@ export default function Dashboard() {
         setReplyText('');
         fetchChats();
       } else {
-        const res = await fetch('/api/messages/send', {
+        const res = await fetch(API + '/api/messages/send', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -426,7 +430,7 @@ export default function Dashboard() {
 
     setIsCreatingAccount(true);
     try {
-      const res = await fetch('/api/accounts', {
+      const res = await fetch(API + '/api/accounts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: newAccountName.trim() })
@@ -448,7 +452,7 @@ export default function Dashboard() {
     try {
       const acc = accounts.find(a => a.id === accId);
       if (acc) setQrModalAccount(acc);
-      await fetch(`/api/accounts/${accId}/connect`, { method: 'POST' });
+      await fetch(`${API}/api/accounts/${accId}/connect`, { method: 'POST' });
       fetchAccounts();
     } catch (err) {
       alert('Failed to connect: ' + err.message);
@@ -458,7 +462,7 @@ export default function Dashboard() {
   const handleDisconnectAccount = async (accId, logout = false) => {
     if (!confirm(logout ? 'Are you sure you want to unlink and log out this WhatsApp account?' : 'Disconnect session?')) return;
     try {
-      await fetch(`/api/accounts/${accId}/disconnect`, {
+      await fetch(`${API}/api/accounts/${accId}/disconnect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ logout })
@@ -472,7 +476,7 @@ export default function Dashboard() {
   const handleDeleteAccount = async (accId) => {
     if (!confirm('Are you sure you want to permanently delete this account? All session credentials and message history will be removed.')) return;
     try {
-      await fetch(`/api/accounts/${accId}`, { method: 'DELETE' });
+      await fetch(`${API}/api/accounts/${accId}`, { method: 'DELETE' });
       if (selectedAccountId === accId) setSelectedAccountId('all');
       if (selectedChat?.accountId === accId) setSelectedChat(null);
       fetchAccounts();
@@ -496,7 +500,7 @@ export default function Dashboard() {
 
     setIsStartingNewChat(true);
     try {
-      const res = await fetch('/api/messages/send', {
+      const res = await fetch(API + '/api/messages/send', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -879,13 +883,13 @@ export default function Dashboard() {
                         {/* Media Display: IMAGE */}
                         {m.mediaType === 'image' && (
                           <div className="mb-2">
-                            {m.mediaUrl ? (
+                            {media(m.mediaUrl) ? (
                               <img
-                                src={m.mediaUrl}
+                                src={media(m.mediaUrl)}
                                 alt="Shared WhatsApp Image"
                                 className="img-fluid rounded shadow-sm"
                                 style={{ maxHeight: '320px', cursor: 'zoom-in', objectFit: 'contain' }}
-                                onClick={() => setLightboxImage(m.mediaUrl)}
+                                onClick={() => setLightboxImage(media(m.mediaUrl))}
                               />
                             ) : (
                               <div className="p-2 border rounded small bg-body-tertiary text-muted">
@@ -898,9 +902,9 @@ export default function Dashboard() {
                         {/* Media Display: VIDEO */}
                         {m.mediaType === 'video' && (
                           <div className="mb-2">
-                            {m.mediaUrl ? (
+                            {media(m.mediaUrl) ? (
                               <video
-                                src={m.mediaUrl}
+                                src={media(m.mediaUrl)}
                                 controls
                                 className="rounded shadow-sm w-100"
                                 style={{ maxHeight: '320px', backgroundColor: '#000' }}
@@ -916,8 +920,8 @@ export default function Dashboard() {
                         {/* Media Display: AUDIO */}
                         {m.mediaType === 'audio' && (
                           <div className="mb-2">
-                            {m.mediaUrl ? (
-                              <audio src={m.mediaUrl} controls className="w-100" style={{ minWidth: '220px' }} />
+                            {media(m.mediaUrl) ? (
+                              <audio src={media(m.mediaUrl)} controls className="w-100" style={{ minWidth: '220px' }} />
                             ) : (
                               <div className="p-2 border rounded small bg-body-tertiary text-muted">
                                 <i className="bi bi-mic me-1"></i> [Voice Message]
@@ -935,9 +939,9 @@ export default function Dashboard() {
                                 {m.fileName || 'Document'}
                               </span>
                             </div>
-                            {m.mediaUrl && (
+                            {media(m.mediaUrl) && (
                               <a
-                                href={m.mediaUrl}
+                                href={media(m.mediaUrl)}
                                 download={m.fileName || 'file'}
                                 target="_blank"
                                 rel="noreferrer"
