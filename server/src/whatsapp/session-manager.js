@@ -247,7 +247,7 @@ class WhatsAppSessionManager extends EventEmitter {
       timestamp: msg.messageTimestamp ? new Date(msg.messageTimestamp * 1000).toISOString() : new Date().toISOString()
     };
 
-    store.addMessage(messageRecord);
+    store.addMessage(messageRecord, { history: isHistorySync });
     this.emit('message', messageRecord);
     return messageRecord;
   }
@@ -298,6 +298,9 @@ class WhatsAppSessionManager extends EventEmitter {
       lastConnectedAt: null
     };
     this.sessions.set(accountId, session);
+    if (store.getAccount(accountId)) {
+      store.saveAccount({ id: accountId, status: 'CONNECTING', lastError: null, qrDataUrl: null });
+    }
     this.emit('status', { accountId, status: 'CONNECTING' });
 
     try {
@@ -316,7 +319,11 @@ class WhatsAppSessionManager extends EventEmitter {
 
       session.sock = sock;
 
-      sock.ev.on('creds.update', saveCreds);
+      let pendingSave = Promise.resolve();
+      session.credsFlush = () => pendingSave;
+      sock.ev.on('creds.update', () => {
+        pendingSave = pendingSave.then(() => saveCreds()).catch(() => {});
+      });
 
       // 1. Connection updates
       sock.ev.on('connection.update', async (update) => {
@@ -413,9 +420,34 @@ class WhatsAppSessionManager extends EventEmitter {
               qrDataUrl: null
             });
             this.emit('status', { accountId, status: 'REAUTH_REQUIRED', error: session.lastError });
+          } else if (statusCode === DisconnectReason.restartRequired) {
+            session.status = 'CONNECTING';
+            session.lastError = null;
+            this.emit('status', { accountId, status: 'CONNECTING' });
+            try { await session.credsFlush?.(); } catch (e) {}
+            try { sock.ev.removeAllListeners(); } catch (e) {}
+            this.initAccount(accountId).catch(err => {
+              console.warn(`[WaCRM] Reconnect after pairing failed for ${accountId}:`, err.message);
+            });
           } else {
+            const hints = {
+              408: 'QR code expired or connection timed out',
+              428: 'Connection closed by WhatsApp',
+              440: 'This WhatsApp session was opened somewhere else (same account running on another server or device)',
+              500: 'Saved session is corrupted',
+              411: 'Saved session is out of date',
+              515: 'WhatsApp requested a restart (normal right after scanning)'
+            };
+            const reason = hints[statusCode] || lastDisconnect?.error?.message || 'Connection closed';
+            console.warn(`[WaCRM] Account ${accountId} closed: code=${statusCode ?? 'n/a'} ${reason}`);
+
+            // Corrupted/outdated saved session can never reconnect: wipe it so a fresh QR is issued
+            if (statusCode === 500 || statusCode === 411) {
+              this.clearSessionFolder(sessionDir);
+            }
+
             session.status = 'DISCONNECTED';
-            session.lastError = lastDisconnect?.error?.message || 'Connection closed';
+            session.lastError = `${reason}${statusCode ? ` (code ${statusCode})` : ''}`;
             store.saveAccount({
               id: accountId,
               status: 'DISCONNECTED',

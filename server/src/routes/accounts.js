@@ -2,10 +2,11 @@ const express = require('express');
 const router = express.Router();
 const store = require('../store');
 const connector = require('../whatsapp/connector-service');
+const { requireAdmin, canAccess } = require('../auth');
 
 // 1. List all accounts with live session status
 router.get('/', (req, res) => {
-  const accounts = store.getAccounts();
+  const accounts = store.getAccounts().filter(a => canAccess(req.user, a.id));
   const data = accounts.map(acc => {
     const status = connector.getAccountStatus(acc.id);
     return {
@@ -21,7 +22,7 @@ router.get('/', (req, res) => {
 });
 
 // 2. Create new account & initiate QR generation
-router.post('/', async (req, res) => {
+router.post('/', requireAdmin, async (req, res) => {
   try {
     const { name } = req.body;
     if (!name || !name.trim()) {
@@ -55,6 +56,7 @@ router.post('/', async (req, res) => {
 
 // 3. Get single account status
 router.get('/:id/status', (req, res) => {
+  if (!canAccess(req.user, req.params.id)) return res.status(403).json({ success: false, error: 'No access to this account' });
   const account = store.getAccount(req.params.id);
   if (!account) {
     return res.status(404).json({ success: false, error: 'Account not found' });
@@ -76,7 +78,7 @@ router.get('/:id/status', (req, res) => {
 });
 
 // 4. Reconnect / Refresh QR code
-router.post('/:id/connect', async (req, res) => {
+router.post('/:id/connect', requireAdmin, async (req, res) => {
   try {
     const account = store.getAccount(req.params.id);
     if (!account) {
@@ -92,7 +94,7 @@ router.post('/:id/connect', async (req, res) => {
 });
 
 // 5. Disconnect account (without deleting)
-router.post('/:id/disconnect', async (req, res) => {
+router.post('/:id/disconnect', requireAdmin, async (req, res) => {
   try {
     const account = store.getAccount(req.params.id);
     if (!account) {
@@ -108,7 +110,7 @@ router.post('/:id/disconnect', async (req, res) => {
 });
 
 // 6. Delete account permanently (unlinks and wipes session files)
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', requireAdmin, async (req, res) => {
   try {
     await connector.deleteAccount(req.params.id);
     res.json({ success: true, message: 'Account deleted' });

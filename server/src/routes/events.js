@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const connector = require('../whatsapp/connector-service');
+const { canAccess } = require('../auth');
 
 const clients = new Set();
 
@@ -18,6 +19,8 @@ setInterval(() => {
 function broadcast(eventType, data) {
   const payload = `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
   for (const client of clients) {
+    // Staff only receive events for accounts they are allowed to see
+    if (data?.accountId && !canAccess(client.user, data.accountId)) continue;
     try {
       client.write(payload);
     } catch (e) {
@@ -40,6 +43,7 @@ router.get('/', (req, res) => {
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
 
+  res.user = req.user;
   clients.add(res);
 
   // Send initial ping

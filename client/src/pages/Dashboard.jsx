@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import TeamModal from '../components/TeamModal';
 
 // Safe JSON parser to guard against non-JSON (HTML 404/502/empty) responses
 const safeJson = async (res) => {
@@ -30,7 +31,9 @@ const getStoredApi = () => {
   return cleanBaseUrl(import.meta.env.VITE_API_URL || '');
 };
 
-export default function Dashboard() {
+export default function Dashboard({ user, onLogout }) {
+  const isAdmin = user?.role === 'admin';
+  const [showTeam, setShowTeam] = useState(false);
   // Backend API URL (can be customized via settings or VITE_API_URL)
   const [apiUrl, setApiUrl] = useState(getStoredApi());
   const [showApiSettingsModal, setShowApiSettingsModal] = useState(false);
@@ -86,6 +89,7 @@ export default function Dashboard() {
 
   const messagesEndRef = useRef(null);
   const selectedChatRef = useRef(null);
+  const markReadRef = useRef(null);
 
   // Helper phone formatter
   const formatPhone = (raw) => {
@@ -232,7 +236,7 @@ export default function Dashboard() {
 
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(endpoint(`/api/accounts/${qrModalAccount.id}/status`));
+        const res = await fetch(endpoint(`/api/accounts/${qrModalAccount.id}/status?t=${Date.now()}`), { cache: 'no-store' });
         const json = await safeJson(res);
         if (json.success && json.data) {
           setQrModalAccount(prev => {
@@ -251,10 +255,24 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, [showAccountsModal, qrModalAccount?.id, qrModalAccount?.status, apiUrl]);
 
+  const markRead = async (chat) => {
+    try {
+      await fetch(endpoint('/api/chats/read'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountId: chat.accountId, remoteJid: chat.remoteJid })
+      });
+      fetchChats();
+    } catch (err) {}
+  };
+
+  markReadRef.current = markRead;
+
   // Reload messages when selected chat changes
   useEffect(() => {
     selectedChatRef.current = selectedChat;
     if (selectedChat) {
+      if (selectedChat.unreadCount) markRead(selectedChat);
       fetchMessages(selectedChat);
       clearAttachment();
     } else {
@@ -320,7 +338,12 @@ export default function Dashboard() {
     sse.addEventListener('message', (e) => {
       try {
         const msg = JSON.parse(e.data);
-        fetchChats();
+        const open = selectedChatRef.current;
+        if (open && !msg.fromMe && open.accountId === msg.accountId && open.remoteJid === msg.remoteJid) {
+          markReadRef.current?.(open);
+        } else {
+          fetchChats();
+        }
 
         setSelectedChat(currentChat => {
           if (currentChat && currentChat.accountId === msg.accountId && currentChat.remoteJid === msg.remoteJid) {
@@ -672,8 +695,8 @@ export default function Dashboard() {
               </span>
             </button>
 
-            {/* Add Account Button */}
-            <button
+            {/* Add Account Button (admins only) */}
+            {isAdmin && <button
               className="btn btn-sm btn-msquare-primary d-flex align-items-center gap-1 py-1 px-3"
               onClick={() => {
                 setQrModalAccount(null);
@@ -682,7 +705,21 @@ export default function Dashboard() {
             >
               <i className="bi bi-plus-lg"></i>
               <span className="d-none d-sm-inline small">Add Account</span>
-            </button>
+            </button>}
+
+            {user && isAdmin && (
+              <button className="wa-icon-btn" title="Team" onClick={() => setShowTeam(true)}>
+                <i className="bi bi-people"></i>
+              </button>
+            )}
+            {user && onLogout && (
+              <div className="d-flex align-items-center gap-1 ps-2 border-start">
+                <span className="small fw-semibold d-none d-md-inline">{user?.name}</span>
+                <button className="wa-icon-btn" title="Sign out" onClick={onLogout}>
+                  <i className="bi bi-box-arrow-right"></i>
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </header>
@@ -863,7 +900,7 @@ export default function Dashboard() {
                     {/* Chat Info */}
                     <div className="flex-grow-1 overflow-hidden">
                       <div className="d-flex justify-content-between align-items-baseline">
-                        <span className="fw-semibold text-truncate">
+                        <span className={`text-truncate ${chat.unreadCount ? 'fw-bold' : 'fw-semibold'}`}>
                           {chat.customerName || formatPhone(chat.customerPhone)}
                         </span>
                         <span className="text-secondary flex-shrink-0 ms-2" style={{ fontSize: '0.72rem' }}>
@@ -885,6 +922,9 @@ export default function Dashboard() {
                         >
                           {chat.accountName}
                         </span>
+                        {chat.unreadCount > 0 && (
+                          <span className="wa-unread ms-1">{chat.unreadCount > 99 ? '99+' : chat.unreadCount}</span>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -1323,7 +1363,7 @@ export default function Dashboard() {
                           <img
                             src={qrModalAccount.qrDataUrl}
                             alt="WhatsApp Web QR Code"
-                            style={{ width: '220px', height: '220px', display: 'block' }}
+                            style={{ width: '260px', height: '260px', display: 'block' }}
                           />
                         </div>
                         <span className="badge bg-warning text-dark small py-1 px-3">
@@ -1648,6 +1688,7 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+      {showTeam && <TeamModal accounts={accounts} currentUserId={user.id} onClose={() => setShowTeam(false)} />}
     </div>
   );
 }

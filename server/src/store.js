@@ -1,134 +1,111 @@
 const fs = require('fs');
 const path = require('path');
+const db = require('./db');
+
+const parse = (row) => (row ? JSON.parse(row.data) : null);
+const digitsOf = (jid) => jid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
 
 class Store {
-  constructor(options = {}) {
-    this.dataPath = options.dataPath || path.join(process.env.DATA_DIR || path.join(__dirname, '..'), 'data', 'wacrm-store.json');
-    this.ensureDirectory();
-    this.accounts = new Map();
-    this.chats = new Map(); // key: `${accountId}:${remoteJid}` -> chat summary
-    this.contacts = new Map(); // key: `${accountId}:${cleanDigits}` -> { name }
-    this.messages = [];
-    this.load();
+  constructor() {
+    this.q = {
+      accountGet: db.prepare('SELECT data FROM accounts WHERE id = ?'),
+      accountAll: db.prepare('SELECT data FROM accounts ORDER BY rowid'),
+      accountPut: db.prepare('INSERT INTO accounts (id, data) VALUES (?, ?) ON CONFLICT(id) DO UPDATE SET data = excluded.data'),
+      chatGet: db.prepare('SELECT data FROM chats WHERE id = ?'),
+      chatPut: db.prepare(
+        'INSERT INTO chats (id, account_id, last_ts, data) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET last_ts = excluded.last_ts, data = excluded.data'
+      ),
+      chatsAll: db.prepare('SELECT data FROM chats ORDER BY last_ts DESC'),
+      contactGet: db.prepare('SELECT name FROM contacts WHERE key = ? OR key = ? LIMIT 1'),
+      contactPut: db.prepare(
+        'INSERT INTO contacts (key, account_id, jid, name) VALUES (?, ?, ?, ?) ON CONFLICT(key) DO UPDATE SET name = excluded.name, jid = excluded.jid'
+      ),
+      msgGet: db.prepare('SELECT data FROM messages WHERE account_id = ? AND id = ?'),
+      msgInsert: db.prepare('INSERT OR IGNORE INTO messages (account_id, id, remote_jid, ts, data) VALUES (?, ?, ?, ?, ?)'),
+      msgUpdate: db.prepare('UPDATE messages SET data = ? WHERE account_id = ? AND id = ?'),
+      msgsChat: db.prepare(
+        'SELECT data FROM (SELECT data, ts FROM messages WHERE account_id = ? AND remote_jid = ? ORDER BY ts DESC LIMIT ?) ORDER BY ts ASC'
+      )
+    };
+    this.importLegacyJson();
   }
 
-  ensureDirectory() {
-    const dir = path.dirname(this.dataPath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
-    }
-  }
-
-  load() {
+  // One-time import of the old wacrm-store.json file, if present
+  importLegacyJson() {
+    const file = path.join(process.env.DATA_DIR || path.join(__dirname, '..'), 'data', 'wacrm-store.json');
+    if (!fs.existsSync(file) || this.getAccounts().length) return;
     try {
-      if (fs.existsSync(this.dataPath)) {
-        const raw = fs.readFileSync(this.dataPath, 'utf-8');
-        const data = JSON.parse(raw);
-        if (Array.isArray(data.accounts)) {
-          this.accounts = new Map(data.accounts.map(acc => [acc.id, acc]));
-        }
-        if (Array.isArray(data.chats)) {
-          this.chats = new Map(data.chats.map(c => [c.id, c]));
-        }
-        if (Array.isArray(data.messages)) {
-          this.messages = data.messages;
-        }
-        if (Array.isArray(data.contacts)) {
-          this.contacts = new Map(data.contacts.map(c => [c.key, c]));
-        }
-      }
+      const data = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      db.tx(() => {
+        (data.accounts || []).forEach(a => this.saveAccount(a));
+        (data.contacts || []).forEach(c => c.accountId && this.saveContact(c.accountId, c.jid, c.name));
+        (data.chats || []).forEach(c => this.q.chatPut.run(c.id, c.accountId, c.lastTimestamp || '', JSON.stringify(c)));
+        (data.messages || []).forEach(m => this.addMessage(m, { history: true }));
+      });
+      fs.renameSync(file, `${file}.migrated`);
+      console.log('[Store] Imported legacy wacrm-store.json into SQLite');
     } catch (err) {
-      console.warn('[Store] Could not load stored data, starting fresh:', err.message);
-      this.accounts = new Map();
-      this.chats = new Map();
-      this.messages = [];
-      this.contacts = new Map();
+      console.warn('[Store] Legacy import skipped:', err.message);
     }
   }
 
-  persist() {
-    try {
-      this.ensureDirectory();
-      const payload = {
-        accounts: Array.from(this.accounts.values()),
-        chats: Array.from(this.chats.values()),
-        contacts: Array.from(this.contacts.values()),
-        // Keep up to 10,000 recent messages for complete history
-        messages: this.messages.slice(-10000)
-      };
-      fs.writeFileSync(this.dataPath, JSON.stringify(payload, null, 2), 'utf-8');
-    } catch (err) {
-      console.error('[Store] Failed to persist data:', err.message);
-    }
-  }
-
-  // Accounts
+  // ---- Accounts ----
   getAccounts() {
-    return Array.from(this.accounts.values());
+    return this.q.accountAll.all().map(parse);
   }
 
   getAccount(id) {
-    return this.accounts.get(id) || null;
+    return parse(this.q.accountGet.get(id));
   }
 
   saveAccount(account) {
-    const existing = this.accounts.get(account.id) || {};
-    const updated = {
-      ...existing,
-      ...account,
-      updatedAt: new Date().toISOString()
-    };
-    if (!updated.createdAt) {
-      updated.createdAt = new Date().toISOString();
-    }
-    this.accounts.set(account.id, updated);
-    this.persist();
-    return updated;
+    const now = new Date().toISOString();
+    const merged = { ...(this.getAccount(account.id) || {}), ...account, updatedAt: now };
+    merged.createdAt = merged.createdAt || now;
+    delete merged.qrDataUrl; // QR codes are short-lived; never stored
+    this.q.accountPut.run(account.id, JSON.stringify(merged));
+    return merged;
   }
 
   deleteAccount(id) {
-    const existed = this.accounts.delete(id);
-    if (existed) {
-      this.messages = this.messages.filter(m => m.accountId !== id);
-      for (const [key, chat] of this.chats.entries()) {
-        if (chat.accountId === id) this.chats.delete(key);
-      }
-      this.persist();
-    }
-    return existed;
+    if (!this.getAccount(id)) return false;
+    db.tx(() => {
+      db.prepare('DELETE FROM accounts WHERE id = ?').run(id);
+      db.prepare('DELETE FROM chats WHERE account_id = ?').run(id);
+      db.prepare('DELETE FROM messages WHERE account_id = ?').run(id);
+      db.prepare('DELETE FROM contacts WHERE account_id = ?').run(id);
+      db.prepare('DELETE FROM user_accounts WHERE account_id = ?').run(id);
+    });
+    return true;
   }
 
-  // Contacts
+  // ---- Contacts ----
   saveContact(accountId, jid, name) {
     if (!accountId || !jid || !name) return;
-    const clean = jid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
-    const key = `${accountId}:${clean || jid}`;
-    this.contacts.set(key, { key, accountId, jid, name: name.trim() });
+    const clean = digitsOf(jid);
+    this.q.contactPut.run(`${accountId}:${clean || jid}`, accountId, jid, name.trim());
 
-    // Update matching chat if already in chats map
-    const chatKey = `${accountId}:${jid}`;
-    if (this.chats.has(chatKey)) {
-      const c = this.chats.get(chatKey);
-      c.customerName = name.trim();
+    const chat = parse(this.q.chatGet.get(`${accountId}:${jid}`));
+    if (chat) {
+      chat.customerName = name.trim();
+      this.q.chatPut.run(chat.id, accountId, chat.lastTimestamp || '', JSON.stringify(chat));
     }
   }
 
   getContactName(accountId, jid) {
     if (!accountId || !jid) return '';
-    const clean = jid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
-    const c = this.contacts.get(`${accountId}:${clean}`) || this.contacts.get(`${accountId}:${jid}`);
-    return c?.name || '';
+    const row = this.q.contactGet.get(`${accountId}:${digitsOf(jid)}`, `${accountId}:${jid}`);
+    return row?.name || '';
   }
 
-  // Chats synced from phone
+  // ---- Chats synced from the phone ----
   saveChat(accountId, chat) {
     const remoteJid = chat.id || chat.remoteJid;
     if (!remoteJid || remoteJid === 'status@broadcast') return;
     const key = `${accountId}:${remoteJid}`;
-    const existing = this.chats.get(key) || {};
+    const existing = parse(this.q.chatGet.get(key)) || {};
 
-    const cleanDigits = remoteJid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
-    const customerPhone = cleanDigits ? `+${cleanDigits}` : remoteJid;
+    const clean = digitsOf(remoteJid);
     const contactName = chat.name || this.getContactName(accountId, remoteJid) || '';
 
     let lastTimestamp = existing.lastTimestamp || new Date().toISOString();
@@ -137,39 +114,45 @@ class Store {
       lastTimestamp = new Date(ts > 1e11 ? ts : ts * 1000).toISOString();
     }
 
-    this.chats.set(key, {
+    const record = {
       ...existing,
       id: key,
       accountId,
       remoteJid,
-      customerPhone: existing.customerPhone || customerPhone,
+      customerPhone: existing.customerPhone || (clean ? `+${clean}` : remoteJid),
       customerName: contactName || existing.customerName || '',
-      unreadCount: chat.unreadCount !== undefined ? chat.unreadCount : (existing.unreadCount || 0),
+      unreadCount: chat.unreadCount !== undefined ? Math.max(0, chat.unreadCount) : existing.unreadCount || 0,
       lastMessage: existing.lastMessage || 'Chat synchronized from phone',
       lastTimestamp
-    });
-
-    if (contactName) {
-      this.saveContact(accountId, remoteJid, contactName);
-    }
-
-    this.persist();
+    };
+    this.q.chatPut.run(key, accountId, lastTimestamp, JSON.stringify(record));
+    if (contactName) this.saveContact(accountId, remoteJid, contactName);
   }
 
-  // Messages
-  addMessage(msg) {
-    if (!msg || !msg.id) return null;
-    const existsIdx = this.messages.findIndex(m => m.id === msg.id && m.accountId === msg.accountId);
-    if (existsIdx !== -1) {
-      if (msg.mediaUrl && !this.messages[existsIdx].mediaUrl) {
-        this.messages[existsIdx].mediaUrl = msg.mediaUrl;
-        this.persist();
+  markRead(accountId, remoteJid) {
+    const key = `${accountId}:${remoteJid}`;
+    const chat = parse(this.q.chatGet.get(key));
+    if (chat && chat.unreadCount) {
+      chat.unreadCount = 0;
+      this.q.chatPut.run(key, accountId, chat.lastTimestamp || '', JSON.stringify(chat));
+    }
+  }
+
+  // ---- Messages ----
+  // options.history: message comes from the phone's history snapshot (does not count as unread)
+  addMessage(msg, options = {}) {
+    if (!msg || !msg.id || !msg.accountId) return null;
+
+    const existing = parse(this.q.msgGet.get(msg.accountId, msg.id));
+    if (existing) {
+      if (msg.mediaUrl && !existing.mediaUrl) {
+        existing.mediaUrl = msg.mediaUrl;
+        this.q.msgUpdate.run(JSON.stringify(existing), msg.accountId, msg.id);
       }
-      return this.messages[existsIdx];
+      return existing;
     }
 
     const customerName = msg.customerName || this.getContactName(msg.accountId, msg.remoteJid) || '';
-
     const record = {
       id: msg.id,
       accountId: msg.accountId,
@@ -185,47 +168,42 @@ class Store {
       timestamp: msg.timestamp || new Date().toISOString()
     };
 
-    if (customerName) {
-      this.saveContact(msg.accountId, msg.remoteJid, customerName);
-    }
+    db.tx(() => {
+      this.q.msgInsert.run(record.accountId, record.id, record.remoteJid, record.timestamp, JSON.stringify(record));
 
-    this.messages.push(record);
+      const key = `${record.accountId}:${record.remoteJid}`;
+      const chat = parse(this.q.chatGet.get(key)) || {};
+      const isNewest = !chat.lastTimestamp || record.timestamp >= chat.lastTimestamp;
 
-    // Update conversation record in this.chats
-    const chatKey = `${msg.accountId}:${msg.remoteJid}`;
-    const preview = this.getLastMessagePreview(record);
-    const existingChat = this.chats.get(chatKey) || {};
-
-    this.chats.set(chatKey, {
-      ...existingChat,
-      id: chatKey,
-      accountId: msg.accountId,
-      remoteJid: msg.remoteJid,
-      customerPhone: record.customerPhone,
-      customerName: customerName || existingChat.customerName || '',
-      lastMessage: preview,
-      mediaType: record.mediaType,
-      lastTimestamp: record.timestamp,
-      lastFromMe: record.fromMe,
-      unreadCount: record.fromMe ? 0 : (existingChat.unreadCount || 0) + 1
+      const next = {
+        ...chat,
+        id: key,
+        accountId: record.accountId,
+        remoteJid: record.remoteJid,
+        customerPhone: chat.customerPhone || record.customerPhone,
+        customerName: customerName || chat.customerName || '',
+        unreadCount: record.fromMe ? 0 : (chat.unreadCount || 0) + (options.history ? 0 : 1)
+      };
+      if (isNewest) {
+        next.lastMessage = this.getLastMessagePreview(record);
+        next.mediaType = record.mediaType;
+        next.lastTimestamp = record.timestamp;
+        next.lastFromMe = record.fromMe;
+      }
+      this.q.chatPut.run(key, record.accountId, next.lastTimestamp || '', JSON.stringify(next));
     });
 
-    this.persist();
+    if (customerName) this.saveContact(record.accountId, record.remoteJid, customerName);
     return record;
   }
 
-  getMessages(accountId, remoteJid) {
-    return this.messages.filter(m => {
-      if (accountId && m.accountId !== accountId) return false;
-      if (remoteJid && m.remoteJid !== remoteJid) return false;
-      return true;
-    }).sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+  // Latest `limit` messages of a conversation, oldest first
+  getMessages(accountId, remoteJid, limit = 1000) {
+    return this.q.msgsChat.all(accountId, remoteJid, limit).map(parse);
   }
 
   getLastMessagePreview(msg) {
-    if (msg.text && msg.text.trim()) {
-      return msg.text.trim();
-    }
+    if (msg.text && msg.text.trim()) return msg.text.trim();
     if (msg.mediaType === 'image') return '📷 Photo';
     if (msg.mediaType === 'video') return '🎥 Video';
     if (msg.mediaType === 'audio') return '🎵 Voice Message';
@@ -233,65 +211,23 @@ class Store {
     return 'Message';
   }
 
-  // Conversations list: merges synced chats with message history
-  getChats(filterAccountId = null) {
-    const chatMap = new Map();
-
-    // 1. First populate registered chats from phone sync
-    for (const [key, c] of this.chats.entries()) {
-      if (filterAccountId && c.accountId !== filterAccountId) continue;
-      const account = this.accounts.get(c.accountId);
-      chatMap.set(key, {
-        ...c,
-        accountName: account?.name || c.accountId,
-        accountPhone: account?.phone || null,
-        customerName: c.customerName || this.getContactName(c.accountId, c.remoteJid) || ''
-      });
-    }
-
-    // 2. Overlay messages to ensure accurate lastMessage, fromMe & timestamp
-    for (const msg of this.messages) {
-      if (filterAccountId && msg.accountId !== filterAccountId) continue;
-
-      const key = `${msg.accountId}:${msg.remoteJid}`;
-      const account = this.accounts.get(msg.accountId);
-      const accountName = account?.name || msg.accountId;
-      const contactName = msg.customerName || this.getContactName(msg.accountId, msg.remoteJid) || '';
-      const preview = this.getLastMessagePreview(msg);
-
-      if (!chatMap.has(key)) {
-        chatMap.set(key, {
-          id: key,
-          accountId: msg.accountId,
-          accountName,
+  // Conversation list. filter: null (all) | accountId | array of accountIds
+  getChats(filter = null) {
+    const allowed = filter == null ? null : new Set([].concat(filter));
+    const accounts = new Map(this.getAccounts().map(a => [a.id, a]));
+    return this.q.chatsAll
+      .all()
+      .map(parse)
+      .filter(c => !allowed || allowed.has(c.accountId))
+      .map(c => {
+        const account = accounts.get(c.accountId);
+        return {
+          ...c,
+          accountName: account?.name || c.accountId,
           accountPhone: account?.phone || null,
-          remoteJid: msg.remoteJid,
-          customerPhone: msg.customerPhone || msg.remoteJid,
-          customerName: contactName,
-          lastMessage: preview,
-          mediaType: msg.mediaType || null,
-          lastTimestamp: msg.timestamp,
-          lastFromMe: msg.fromMe,
-          unreadCount: (!msg.fromMe ? 1 : 0)
-        });
-      } else {
-        const chat = chatMap.get(key);
-        if (new Date(msg.timestamp) >= new Date(chat.lastTimestamp)) {
-          chat.lastMessage = preview;
-          chat.mediaType = msg.mediaType || null;
-          chat.lastTimestamp = msg.timestamp;
-          chat.lastFromMe = msg.fromMe;
-        }
-        if (contactName && !chat.customerName) {
-          chat.customerName = contactName;
-        }
-      }
-    }
-
-    // Sort newest to oldest
-    return Array.from(chatMap.values()).sort(
-      (a, b) => new Date(b.lastTimestamp) - new Date(a.lastTimestamp)
-    );
+          customerName: c.customerName || this.getContactName(c.accountId, c.remoteJid) || ''
+        };
+      });
   }
 }
 

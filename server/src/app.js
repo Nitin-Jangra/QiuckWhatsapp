@@ -4,6 +4,9 @@ const cors = require('cors');
 const path = require('path');
 const fs = require('fs');
 
+const auth = require('./auth');
+const authRoutes = require('./routes/auth');
+const usersRoutes = require('./routes/users');
 const accountsRoutes = require('./routes/accounts');
 const chatsRoutes = require('./routes/chats');
 const eventsRoutes = require('./routes/events');
@@ -15,6 +18,16 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 app.use(cors({ origin: process.env.CORS_ORIGIN || '*' }));
+
+// Never let browsers, proxies or CDNs cache API data (QR codes and chat state change constantly)
+app.disable('etag');
+app.use((req, res, next) => {
+  if (!req.path.startsWith('/media') && !req.path.startsWith('/api/media')) {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+  }
+  next();
+});
 
 // Increase payload limit to 50MB to support high-resolution photos and video sharing
 app.use(express.json({ limit: '50mb' }));
@@ -28,29 +41,35 @@ app.use((req, res, next) => {
   next();
 });
 
+// Behind Hostinger/Cloudflare proxies: trust X-Forwarded-* so cookies and rate limits work
+app.set('trust proxy', 1);
+app.use(auth.attachUser);
+
 // Ensure media storage folder exists and serve media files statically
 const mediaDir = path.join(process.env.DATA_DIR || path.join(__dirname, '..'), 'media');
 if (!fs.existsSync(mediaDir)) {
   fs.mkdirSync(mediaDir, { recursive: true });
 }
-app.use('/api/media', express.static(mediaDir));
-app.use('/media', express.static(mediaDir));
+// Media access guard (active when AUTH_REQUIRED=true)
+const mediaGuard = (req, res, next) => {
+  if (process.env.AUTH_REQUIRED !== 'true') return next();
+  if (!req.user) return res.status(401).json({ success: false, error: 'Please sign in' });
+  const accountId = decodeURIComponent(req.path.split('/')[1] || '');
+  return auth.canAccess(req.user, accountId) ? next() : res.status(403).json({ success: false, error: 'No access' });
+};
+app.use('/api/media', mediaGuard, express.static(mediaDir));
+app.use('/media', mediaGuard, express.static(mediaDir));
 
-// Core API Routes (supporting both /api/path and /path)
-app.use('/api/accounts', accountsRoutes);
-app.use('/accounts', accountsRoutes);
-
-app.use('/api/chats', chatsRoutes);
-app.use('/chats', chatsRoutes);
-
-app.use('/api/messages', chatsRoutes);
-app.use('/messages', chatsRoutes);
-
-app.use('/api/events', eventsRoutes);
-app.use('/events', eventsRoutes);
-
-app.use('/api/whatsapp', whatsappRoutes);
-app.use('/whatsapp', whatsappRoutes);
+// Core API Routes (supporting both /api/path and /path). Everything except /auth requires sign-in.
+for (const prefix of ['/api', '']) {
+  app.use(`${prefix}/auth`, authRoutes);
+  app.use(`${prefix}/users`, auth.requireAuth, usersRoutes);
+  app.use(`${prefix}/accounts`, auth.requireAuth, accountsRoutes);
+  app.use(`${prefix}/chats`, auth.requireAuth, chatsRoutes);
+  app.use(`${prefix}/messages`, auth.requireAuth, chatsRoutes);
+  app.use(`${prefix}/events`, auth.requireAuth, eventsRoutes);
+  app.use(`${prefix}/whatsapp`, auth.requireAuth, auth.requireAdmin, whatsappRoutes);
+}
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {

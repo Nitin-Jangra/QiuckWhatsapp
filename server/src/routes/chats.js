@@ -2,11 +2,15 @@ const express = require('express');
 const router = express.Router();
 const store = require('../store');
 const connector = require('../whatsapp/connector-service');
+const { canAccess, allowedAccountIds } = require('../auth');
+
+const deny = (res) => res.status(403).json({ success: false, error: 'No access to this account' });
 
 // 1. Get all conversations (optional query ?accountId=...)
 router.get('/', (req, res) => {
-  const accountId = req.query.accountId || null;
-  const chats = store.getChats(accountId);
+  const wanted = req.query.accountId || null;
+  if (wanted && !canAccess(req.user, wanted)) return deny(res);
+  const chats = store.getChats(wanted || allowedAccountIds(req.user, store.getAccounts().map(a => a.id)));
   res.json({ success: true, data: chats });
 });
 
@@ -17,6 +21,7 @@ router.get('/messages', (req, res) => {
     return res.status(400).json({ success: false, error: 'accountId and remoteJid are required' });
   }
 
+  if (!canAccess(req.user, accountId)) return deny(res);
   const messages = store.getMessages(accountId, remoteJid);
   res.json({ success: true, data: messages });
 });
@@ -25,10 +30,11 @@ router.get('/messages', (req, res) => {
 router.post('/sync', async (req, res) => {
   try {
     const { accountId, remoteJid } = req.body;
+    if (accountId && !canAccess(req.user, accountId)) return deny(res);
     if (accountId && remoteJid) {
       await connector.syncChatFromPhone(accountId, remoteJid);
     }
-    const chats = store.getChats(accountId || null);
+    const chats = store.getChats(accountId || allowedAccountIds(req.user, store.getAccounts().map(a => a.id)));
     res.json({ success: true, message: 'Chats synchronized', data: chats });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -46,6 +52,7 @@ router.post('/send', async (req, res) => {
     if (!to && !remoteJid) {
       return res.status(400).json({ success: false, error: 'Recipient phone or remoteJid is required' });
     }
+    if (!canAccess(req.user, accountId)) return deny(res);
     if (!text || !text.trim()) {
       return res.status(400).json({ success: false, error: 'Message text cannot be empty' });
     }
@@ -74,6 +81,7 @@ router.post('/send-media', async (req, res) => {
     if (!to && !remoteJid) {
       return res.status(400).json({ success: false, error: 'Recipient phone or remoteJid is required' });
     }
+    if (!canAccess(req.user, accountId)) return deny(res);
     if (!mediaBase64) {
       return res.status(400).json({ success: false, error: 'mediaBase64 content is required' });
     }
@@ -98,6 +106,17 @@ router.post('/send-media', async (req, res) => {
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
+});
+
+// 6. Mark a conversation as read (clears the unread badge)
+router.post('/read', (req, res) => {
+  const { accountId, remoteJid } = req.body || {};
+  if (!accountId || !remoteJid) {
+    return res.status(400).json({ success: false, error: 'accountId and remoteJid are required' });
+  }
+  if (!canAccess(req.user, accountId)) return deny(res);
+  store.markRead(accountId, remoteJid);
+  res.json({ success: true });
 });
 
 module.exports = router;

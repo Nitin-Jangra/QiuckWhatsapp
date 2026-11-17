@@ -7,83 +7,143 @@ const nodePath = require('path');
 process.env.DATA_DIR = fs0.mkdtempSync(nodePath.join(os.tmpdir(), 'wacrm-test-'));
 process.env.NODE_ENV = 'test';
 const app = require('../src/app');
+const store = require('../src/store');
 
-test('Express API - Health Check Endpoint', async () => {
+const JSON_HEADERS = { 'Content-Type': 'application/json' };
+
+async function withServer(fn) {
   const server = app.listen(0);
-  const port = server.address().port;
-
+  const base = `http://127.0.0.1:${server.address().port}`;
   try {
-    const res = await fetch(`http://127.0.0.1:${port}/api/health`);
-    assert.strictEqual(res.status, 200);
-    const body = await res.json();
-    assert.strictEqual(body.status, 'ok');
-    assert.ok(typeof body.accountsCount === 'number');
-    assert.ok(body.timestamp);
+    await fn(base);
   } finally {
     server.close();
   }
-});
+}
 
-test('Express API - Accounts Endpoint', async () => {
-  const server = app.listen(0);
-  const port = server.address().port;
+const post = (base, path, body, cookie) =>
+  fetch(`${base}${path}`, { method: 'POST', headers: { ...JSON_HEADERS, ...(cookie && { cookie }) }, body: JSON.stringify(body) });
 
-  try {
-    // 1. Get Accounts list
-    const res = await fetch(`http://127.0.0.1:${port}/api/accounts`);
+// First call creates the admin; later calls just sign in
+async function adminCookie(base) {
+  let res = await post(base, '/api/auth/setup', { username: 'admin', name: 'Admin', password: 'password123' });
+  if (res.status !== 200) res = await post(base, '/api/auth/login', { username: 'admin', password: 'password123' });
+  assert.strictEqual(res.status, 200);
+  return res.headers.get('set-cookie').split(';')[0];
+}
+
+test('Health check is public', async () => {
+  await withServer(async (base) => {
+    const res = await fetch(`${base}/api/health`);
     assert.strictEqual(res.status, 200);
-    const body = await res.json();
-    assert.strictEqual(body.success, true);
-    assert.ok(Array.isArray(body.data));
-
-    // 2. Create Account
-    const createRes = await fetch(`http://127.0.0.1:${port}/api/accounts`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: 'Integration Test Account' })
-    });
-    assert.strictEqual(createRes.status, 200);
-    const createBody = await createRes.json();
-    assert.strictEqual(createBody.success, true);
-    assert.ok(createBody.data.id);
-    assert.strictEqual(createBody.data.name, 'Integration Test Account');
-  } finally {
-    server.close();
-  }
+    assert.strictEqual((await res.json()).status, 'ok');
+  });
 });
 
-test('Express API - Chats & Send Message Validation', async () => {
-  const server = app.listen(0);
-  const port = server.address().port;
-
-  try {
-    // 1. Get chats
-    const res = await fetch(`http://127.0.0.1:${port}/api/chats`);
+test('Public access by default without login', async () => {
+  delete process.env.AUTH_REQUIRED;
+  await withServer(async (base) => {
+    const res = await fetch(`${base}/api/accounts`);
     assert.strictEqual(res.status, 200);
     const body = await res.json();
     assert.strictEqual(body.success, true);
     assert.ok(Array.isArray(body.data));
 
-    // 2. Send validation (missing fields)
-    const sendRes = await fetch(`http://127.0.0.1:${port}/api/messages/send`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({})
-    });
-    assert.strictEqual(sendRes.status, 400);
-    const sendBody = await sendRes.json();
-    assert.strictEqual(sendBody.success, false);
+    const me = await (await fetch(`${base}/api/auth/me`)).json();
+    assert.strictEqual(me.data.authRequired, false);
+    assert.strictEqual(me.data.user.role, 'admin');
+  });
+});
 
-    // 3. Send media validation (missing mediaBase64)
-    const mediaRes = await fetch(`http://127.0.0.1:${port}/api/messages/send-media`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ accountId: 'acc_1', to: '919876543210' })
+test('API requires sign-in when AUTH_REQUIRED=true', async () => {
+  process.env.AUTH_REQUIRED = 'true';
+  try {
+    await withServer(async (base) => {
+      assert.strictEqual((await fetch(`${base}/api/accounts`)).status, 401);
+      assert.strictEqual((await fetch(`${base}/api/chats`)).status, 401);
+      assert.strictEqual((await fetch(`${base}/api/events`)).status, 401);
+
+      const me = await (await fetch(`${base}/api/auth/me`)).json();
+      assert.strictEqual(me.data.needsSetup, true);
+
+      const weak = await post(base, '/api/auth/setup', { username: 'admin', password: 'short' });
+      assert.strictEqual(weak.status, 400);
+
+      const cookie = await adminCookie(base);
+      const me2 = await (await fetch(`${base}/api/auth/me`, { headers: { cookie } })).json();
+      assert.strictEqual(me2.data.user.role, 'admin');
+      assert.strictEqual(me2.data.needsSetup, false);
+
+      // Setup cannot be repeated, wrong password is rejected
+      assert.strictEqual((await post(base, '/api/auth/setup', { username: 'x', password: 'password123' })).status, 403);
+      assert.strictEqual((await post(base, '/api/auth/login', { username: 'admin', password: 'wrongpass' })).status, 401);
     });
-    assert.strictEqual(mediaRes.status, 400);
-    const mediaBody = await mediaRes.json();
-    assert.strictEqual(mediaBody.success, false);
   } finally {
-    server.close();
+    delete process.env.AUTH_REQUIRED;
   }
 });
+
+test('Accounts, chats and send validation (admin)', async () => {
+  await withServer(async (base) => {
+    const cookie = await adminCookie(base);
+    const get = (p) => fetch(`${base}${p}`, { headers: { cookie } });
+
+    const list = await (await get('/api/accounts')).json();
+    assert.ok(Array.isArray(list.data));
+
+    const created = await post(base, '/api/accounts', { name: 'Integration Test Account' }, cookie);
+    assert.strictEqual(created.status, 200);
+    const createdBody = await created.json();
+    assert.strictEqual(createdBody.data.name, 'Integration Test Account');
+
+    assert.strictEqual((await get('/api/chats')).status, 200);
+    assert.strictEqual((await post(base, '/api/messages/send', {}, cookie)).status, 400);
+    assert.strictEqual((await post(base, '/api/messages/send-media', { accountId: 'acc_1', to: '919876543210' }, cookie)).status, 400);
+  });
+});
+
+test('Staff only see and use accounts assigned to them', async () => {
+  process.env.AUTH_REQUIRED = 'true';
+  try {
+    await withServer(async (base) => {
+      const admin = await adminCookie(base);
+      store.saveAccount({ id: 'acc_a', name: 'Sales' });
+      store.saveAccount({ id: 'acc_b', name: 'Support' });
+      store.addMessage({ id: 'm1', accountId: 'acc_a', remoteJid: '911@s.whatsapp.net', text: 'hi A', timestamp: new Date().toISOString() });
+      store.addMessage({ id: 'm2', accountId: 'acc_b', remoteJid: '922@s.whatsapp.net', text: 'hi B', timestamp: new Date().toISOString() });
+
+      const made = await post(base, '/api/users', { username: 'agent1', name: 'Agent One', password: 'agentpass1', role: 'agent', accountIds: ['acc_a'] }, admin);
+      assert.strictEqual(made.status, 200);
+      const login = await post(base, '/api/auth/login', { username: 'agent1', password: 'agentpass1' });
+      const agent = login.headers.get('set-cookie').split(';')[0];
+      const get = (p) => fetch(`${base}${p}`, { headers: { cookie: agent } });
+
+      const accounts = (await (await get('/api/accounts')).json()).data;
+      assert.deepStrictEqual(accounts.map(a => a.id), ['acc_a']);
+
+      const chats = (await (await get('/api/chats')).json()).data;
+      assert.ok(chats.length >= 1 && chats.every(c => c.accountId === 'acc_a'));
+
+      assert.strictEqual((await get('/api/chats?accountId=acc_b')).status, 403);
+      assert.strictEqual((await get('/api/chats/messages?accountId=acc_b&remoteJid=922@s.whatsapp.net')).status, 403);
+      assert.strictEqual((await post(base, '/api/messages/send', { accountId: 'acc_b', to: '922', text: 'x' }, agent)).status, 403);
+
+      // Staff cannot manage accounts or users
+      assert.strictEqual((await post(base, '/api/accounts', { name: 'Nope' }, agent)).status, 403);
+      assert.strictEqual((await get('/api/users')).status, 403);
+
+      // Mark read clears the unread badge
+      assert.strictEqual((await post(base, '/api/chats/read', { accountId: 'acc_a', remoteJid: '911@s.whatsapp.net' }, agent)).status, 200);
+      const after = (await (await get('/api/chats')).json()).data.find(c => c.remoteJid === '911@s.whatsapp.net');
+      assert.strictEqual(after.unreadCount, 0);
+
+      // Admin cannot be locked out
+      const me = (await (await fetch(`${base}/api/auth/me`, { headers: { cookie: admin } })).json()).data.user;
+      const demote = await fetch(`${base}/api/users/${me.id}`, { method: 'PUT', headers: { ...JSON_HEADERS, cookie: admin }, body: JSON.stringify({ role: 'agent' }) });
+      assert.strictEqual(demote.status, 400);
+    });
+  } finally {
+    delete process.env.AUTH_REQUIRED;
+  }
+});
+
