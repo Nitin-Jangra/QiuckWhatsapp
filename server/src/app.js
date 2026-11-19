@@ -7,6 +7,7 @@ const fs = require('fs');
 const auth = require('./auth');
 const authRoutes = require('./routes/auth');
 const usersRoutes = require('./routes/users');
+const adminRoutes = require('./routes/admin');
 const accountsRoutes = require('./routes/accounts');
 const chatsRoutes = require('./routes/chats');
 const eventsRoutes = require('./routes/events');
@@ -63,6 +64,7 @@ app.use('/media', mediaGuard, express.static(mediaDir));
 // Core API Routes (supporting both /api/path and /path). Everything except /auth requires sign-in.
 for (const prefix of ['/api', '']) {
   app.use(`${prefix}/auth`, authRoutes);
+  app.use(`${prefix}/admin`, adminRoutes);
   app.use(`${prefix}/users`, auth.requireAuth, usersRoutes);
   app.use(`${prefix}/accounts`, auth.requireAuth, accountsRoutes);
   app.use(`${prefix}/chats`, auth.requireAuth, chatsRoutes);

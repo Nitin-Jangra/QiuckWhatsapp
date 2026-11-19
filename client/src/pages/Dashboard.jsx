@@ -1,5 +1,8 @@
 import React, { useState, useEffect, useRef } from 'react';
 import TeamModal from '../components/TeamModal';
+import AdminPanelModal from '../components/AdminPanelModal';
+import PrivacyPolicyModal from '../components/PrivacyPolicyModal';
+import TermsConditionsModal from '../components/TermsConditionsModal';
 
 // Safe JSON parser to guard against non-JSON (HTML 404/502/empty) responses
 const safeJson = async (res) => {
@@ -32,8 +35,11 @@ const getStoredApi = () => {
 };
 
 export default function Dashboard({ user, onLogout }) {
-  const isAdmin = user?.role === 'admin';
+  const isAdmin = !user || user?.role === 'admin';
   const [showTeam, setShowTeam] = useState(false);
+  const [showAdminPanel, setShowAdminPanel] = useState(false);
+  const [showPrivacy, setShowPrivacy] = useState(false);
+  const [showTerms, setShowTerms] = useState(false);
   // Backend API URL (can be customized via settings or VITE_API_URL)
   const [apiUrl, setApiUrl] = useState(getStoredApi());
   const [showApiSettingsModal, setShowApiSettingsModal] = useState(false);
@@ -706,6 +712,17 @@ export default function Dashboard({ user, onLogout }) {
               <i className="bi bi-plus-lg"></i>
               <span className="d-none d-sm-inline small">Add Account</span>
             </button>}
+
+            {isAdmin && (
+              <button
+                className="btn btn-sm btn-outline-danger d-flex align-items-center gap-1 py-1 px-2"
+                title="Admin Panel"
+                onClick={() => setShowAdminPanel(true)}
+              >
+                <i className="bi bi-shield-lock-fill"></i>
+                <span className="d-none d-lg-inline small fw-semibold">Admin Panel</span>
+              </button>
+            )}
 
             {user && isAdmin && (
               <button className="wa-icon-btn" title="Team" onClick={() => setShowTeam(true)}>
@@ -1688,7 +1705,10 @@ export default function Dashboard({ user, onLogout }) {
           </div>
         </div>
       )}
-      {showTeam && <TeamModal accounts={accounts} currentUserId={user.id} onClose={() => setShowTeam(false)} />}
+      {showTeam && <TeamModal accounts={accounts} currentUserId={user?.id} onClose={() => setShowTeam(false)} />}
+      {showAdminPanel && <AdminPanelModal currentUserId={user?.id} onClose={() => setShowAdminPanel(false)} />}
+      {showPrivacy && <PrivacyPolicyModal onClose={() => setShowPrivacy(false)} />}
+      {showTerms && <TermsConditionsModal onClose={() => setShowTerms(false)} />}
     </div>
   );
 }

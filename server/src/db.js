@@ -36,17 +36,74 @@ db.exec(`
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     username TEXT NOT NULL UNIQUE COLLATE NOCASE,
     name TEXT NOT NULL,
+    full_name TEXT,
+    phone_number TEXT UNIQUE,
+    phone_verified_at TEXT,
     password_hash TEXT NOT NULL,
     role TEXT NOT NULL DEFAULT 'agent',
+    status TEXT NOT NULL DEFAULT 'active',
     active INTEGER NOT NULL DEFAULT 1,
-    created_at TEXT NOT NULL
+    created_at TEXT NOT NULL,
+    updated_at TEXT
   );
   CREATE TABLE IF NOT EXISTS user_accounts (
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
     account_id TEXT NOT NULL,
     PRIMARY KEY (user_id, account_id)
   );
+  CREATE TABLE IF NOT EXISTS otp_verifications (
+    id TEXT PRIMARY KEY,
+    phone_number TEXT NOT NULL,
+    otp_hash TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 3,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_otp_phone_purpose ON otp_verifications(phone_number, purpose);
+  CREATE TABLE IF NOT EXISTS user_sessions (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    ip_address TEXT,
+    user_agent TEXT,
+    expires_at TEXT NOT NULL,
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS idx_sessions_user ON user_sessions(user_id);
+  CREATE TABLE IF NOT EXISTS audit_logs (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER,
+    action TEXT NOT NULL,
+    ip_address TEXT,
+    details TEXT,
+    created_at TEXT NOT NULL
+  );
 `);
+
+// Ensure any missing columns on existing users table are added safely
+try {
+  const userCols = db.prepare('PRAGMA table_info(users)').all().map(c => c.name);
+  if (!userCols.includes('phone_number')) {
+    db.exec('ALTER TABLE users ADD COLUMN phone_number TEXT');
+    db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_users_phone ON users(phone_number) WHERE phone_number IS NOT NULL');
+  }
+  if (!userCols.includes('full_name')) {
+    db.exec('ALTER TABLE users ADD COLUMN full_name TEXT');
+  }
+  if (!userCols.includes('phone_verified_at')) {
+    db.exec('ALTER TABLE users ADD COLUMN phone_verified_at TEXT');
+  }
+  if (!userCols.includes('status')) {
+    db.exec("ALTER TABLE users ADD COLUMN status TEXT NOT NULL DEFAULT 'active'");
+  }
+  if (!userCols.includes('updated_at')) {
+    db.exec('ALTER TABLE users ADD COLUMN updated_at TEXT');
+  }
+} catch (e) {
+  // Ignore if already altered
+}
+
 
 // Run several statements atomically (nesting-safe)
 let depth = 0;
