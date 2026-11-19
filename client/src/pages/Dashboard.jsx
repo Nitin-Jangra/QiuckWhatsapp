@@ -809,12 +809,32 @@ export default function Dashboard({ user, onLogout }) {
             <i className="bi bi-exclamation-triangle-fill text-warning me-2"></i>
             <strong>Backend Connection:</strong> {apiErrorNotice}
           </div>
-          <button
-            className="btn btn-sm btn-dark py-0 px-2 ms-2"
-            onClick={() => { fetchAccounts(); fetchChats(); }}
-          >
-            Retry Connection
-          </button>
+          <div className="d-flex gap-2 ms-2">
+            <button
+              className="btn btn-sm btn-outline-dark py-0 px-2"
+              onClick={() => {
+                const url = window.prompt("Enter your Node.js WhatsApp Backend Server URL (e.g. https://your-backend.com or Cloudflare Tunnel URL):", apiUrl || "");
+                if (url !== null) {
+                  const cleaned = url.trim().replace(/\/$/, "");
+                  if (cleaned) {
+                    localStorage.setItem('wacrm_api_url', cleaned);
+                  } else {
+                    localStorage.removeItem('wacrm_api_url');
+                  }
+                  setApiUrl(cleaned);
+                  setTimeout(() => { fetchAccounts(); fetchChats(); }, 100);
+                }
+              }}
+            >
+              Set Backend URL
+            </button>
+            <button
+              className="btn btn-sm btn-dark py-0 px-2"
+              onClick={() => { fetchAccounts(); fetchChats(); }}
+            >
+              Retry
+            </button>
+          </div>
         </div>
       )}
 
