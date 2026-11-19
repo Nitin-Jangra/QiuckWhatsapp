@@ -1,5 +1,6 @@
 const path = require('path');
 const fs = require('fs');
+const crypto = require('crypto');
 const EventEmitter = require('events');
 const {
   default: makeWASocket,
@@ -285,6 +286,7 @@ class WhatsAppSessionManager extends EventEmitter {
     }
 
     const sessionDir = this.getAccountSessionDir(accountId);
+    this.restoreCredsFromDb(accountId, sessionDir);
     const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
 
     session = {
@@ -322,7 +324,10 @@ class WhatsAppSessionManager extends EventEmitter {
       let pendingSave = Promise.resolve();
       session.credsFlush = () => pendingSave;
       sock.ev.on('creds.update', () => {
-        pendingSave = pendingSave.then(() => saveCreds()).catch(() => {});
+        pendingSave = pendingSave
+          .then(() => saveCreds())
+          .then(() => this.backupCredsToDb(accountId, sessionDir))
+          .catch(() => {});
       });
 
       // 1. Connection updates
@@ -753,6 +758,62 @@ class WhatsAppSessionManager extends EventEmitter {
         fs.rmSync(sessionDir, { recursive: true, force: true });
       }
     } catch (e) {}
+  }
+
+  // Encrypted credential backup to database (AES-256-GCM)
+  backupCredsToDb(accountId, sessionDir) {
+    try {
+      const credsFile = path.join(sessionDir, 'creds.json');
+      if (!fs.existsSync(credsFile)) return;
+      const raw = fs.readFileSync(credsFile, 'utf8');
+      const key = crypto.createHash('sha256').update(process.env.SESSION_SECRET || 'wacrm-secret-key-2026').digest();
+      const iv = crypto.randomBytes(12);
+      const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
+      let encrypted = cipher.update(raw, 'utf8', 'hex');
+      encrypted += cipher.final('hex');
+      const authTag = cipher.getAuthTag().toString('hex');
+
+      const db = require('../db');
+      const acc = store.getAccount(accountId);
+      db.prepare(`
+        INSERT INTO whatsapp_sessions (account_id, user_id, encrypted_creds, iv, updated_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(account_id) DO UPDATE SET
+          user_id = excluded.user_id,
+          encrypted_creds = excluded.encrypted_creds,
+          iv = excluded.iv,
+          updated_at = excluded.updated_at
+      `).run(accountId, acc?.userId || null, `${encrypted}:${authTag}`, iv.toString('hex'), new Date().toISOString());
+    } catch (err) {
+      // Non-fatal during high frequency auth writes
+    }
+  }
+
+  // Restore encrypted credentials from database if missing locally
+  restoreCredsFromDb(accountId, sessionDir) {
+    try {
+      const credsFile = path.join(sessionDir, 'creds.json');
+      if (fs.existsSync(credsFile)) return true;
+
+      const db = require('../db');
+      const row = db.prepare('SELECT encrypted_creds, iv FROM whatsapp_sessions WHERE account_id = ?').get(accountId);
+      if (!row || !row.encrypted_creds || !row.iv) return false;
+
+      const [encrypted, authTag] = row.encrypted_creds.split(':');
+      if (!encrypted || !authTag) return false;
+
+      const key = crypto.createHash('sha256').update(process.env.SESSION_SECRET || 'wacrm-secret-key-2026').digest();
+      const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(row.iv, 'hex'));
+      decipher.setAuthTag(Buffer.from(authTag, 'hex'));
+      let decrypted = decipher.update(encrypted, 'hex', 'utf8');
+      decrypted += decipher.final('utf8');
+
+      fs.mkdirSync(sessionDir, { recursive: true });
+      fs.writeFileSync(credsFile, decrypted, 'utf8');
+      return true;
+    } catch (err) {
+      return false;
+    }
   }
 
   isDuplicateMessage(messageId, accountId = '') {

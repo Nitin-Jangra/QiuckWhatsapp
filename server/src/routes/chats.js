@@ -6,11 +6,38 @@ const { canAccess, allowedAccountIds } = require('../auth');
 
 const deny = (res) => res.status(403).json({ success: false, error: 'No access to this account' });
 
-// 1. Get all conversations (optional query ?accountId=...)
+// 1. Get all conversations (with account, unread, pinned, archived, search filters & tenant scoping)
 router.get('/', (req, res) => {
   const wanted = req.query.accountId || null;
+
   if (wanted && !canAccess(req.user, wanted)) return deny(res);
-  const chats = store.getChats(wanted || allowedAccountIds(req.user, store.getAccounts().map(a => a.id)));
+
+  const allAccountIds = store.getAccounts().map(a => a.id);
+  const allowedIds = wanted ? [wanted] : allowedAccountIds(req.user, allAccountIds);
+  let chats = store.getChats(allowedIds);
+
+  const filterType = req.query.filterType || req.query.filter || 'all';
+  if (filterType === 'unread') {
+    chats = chats.filter(c => c.unreadCount > 0);
+  } else if (filterType === 'pinned') {
+    chats = chats.filter(c => c.isPinned);
+  } else if (filterType === 'archived') {
+    chats = chats.filter(c => c.isArchived);
+  } else if (filterType === 'all' && !req.query.includeArchived) {
+    // Hide archived by default in standard feed
+    chats = chats.filter(c => !c.isArchived);
+  }
+
+  const q = (req.query.search || req.query.q || '').trim().toLowerCase();
+  if (q) {
+    chats = chats.filter(c =>
+      (c.customerName && c.customerName.toLowerCase().includes(q)) ||
+      (c.customerPhone && c.customerPhone.toLowerCase().includes(q)) ||
+      (c.lastMessage && c.lastMessage.toLowerCase().includes(q)) ||
+      (c.accountName && c.accountName.toLowerCase().includes(q))
+    );
+  }
+
   res.json({ success: true, data: chats });
 });
 
@@ -22,29 +49,53 @@ router.get('/messages', (req, res) => {
   }
 
   if (!canAccess(req.user, accountId)) return deny(res);
-  const messages = store.getMessages(accountId, remoteJid);
+  const limit = req.query.limit ? Math.min(Number(req.query.limit), 2000) : 1000;
+  const messages = store.getMessages(accountId, remoteJid, limit);
   res.json({ success: true, data: messages });
 });
 
-// 3. Trigger on-demand sync from mobile phone
+// 3. Pin / Unpin conversation
+router.post('/pin', (req, res) => {
+  const { accountId, remoteJid, isPinned } = req.body || {};
+  if (!accountId || !remoteJid) {
+    return res.status(400).json({ success: false, error: 'accountId and remoteJid are required' });
+  }
+  if (!canAccess(req.user, accountId)) return deny(res);
+  const chat = store.pinChat(accountId, remoteJid, isPinned !== false);
+  res.json({ success: true, data: chat });
+});
+
+// 4. Archive / Unarchive conversation
+router.post('/archive', (req, res) => {
+  const { accountId, remoteJid, isArchived } = req.body || {};
+  if (!accountId || !remoteJid) {
+    return res.status(400).json({ success: false, error: 'accountId and remoteJid are required' });
+  }
+  if (!canAccess(req.user, accountId)) return deny(res);
+  const chat = store.archiveChat(accountId, remoteJid, isArchived !== false);
+  res.json({ success: true, data: chat });
+});
+
+// 5. Trigger on-demand sync from mobile phone
 router.post('/sync', async (req, res) => {
   try {
-    const { accountId, remoteJid } = req.body;
+    const { accountId, remoteJid } = req.body || {};
     if (accountId && !canAccess(req.user, accountId)) return deny(res);
     if (accountId && remoteJid) {
       await connector.syncChatFromPhone(accountId, remoteJid);
     }
-    const chats = store.getChats(accountId || allowedAccountIds(req.user, store.getAccounts().map(a => a.id)));
+    const targetUserId = req.user?.role === 'admin' ? null : req.user?.id;
+    const chats = store.getChats(accountId || allowedAccountIds(req.user, store.getAccounts(targetUserId).map(a => a.id)), targetUserId);
     res.json({ success: true, message: 'Chats synchronized', data: chats });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// 4. Send text message
+// 6. Send text message
 router.post('/send', async (req, res) => {
   try {
-    const { accountId, to, text, remoteJid } = req.body;
+    const { accountId, to, text, remoteJid } = req.body || {};
 
     if (!accountId) {
       return res.status(400).json({ success: false, error: 'accountId is required' });
@@ -70,10 +121,10 @@ router.post('/send', async (req, res) => {
   }
 });
 
-// 5. Send media message (Image, Video, Audio, Document)
+// 7. Send media message (Image, Video, Audio, Document)
 router.post('/send-media', async (req, res) => {
   try {
-    const { accountId, to, remoteJid, mediaBase64, mediaType, mimetype, fileName, caption } = req.body;
+    const { accountId, to, remoteJid, mediaBase64, mediaType, mimetype, fileName, caption } = req.body || {};
 
     if (!accountId) {
       return res.status(400).json({ success: false, error: 'accountId is required' });
@@ -108,7 +159,7 @@ router.post('/send-media', async (req, res) => {
   }
 });
 
-// 6. Mark a conversation as read (clears the unread badge)
+// 8. Mark a conversation as read (clears the unread badge)
 router.post('/read', (req, res) => {
   const { accountId, remoteJid } = req.body || {};
   if (!accountId || !remoteJid) {

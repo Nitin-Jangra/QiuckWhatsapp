@@ -60,6 +60,7 @@ copyDir('client/dist');
 console.log('[package] Copying server workspace...');
 copyFile('server/package.json');
 copyFile('server/package-lock.json');
+copyFile('server/schema.sql');
 copyDir('server/src');
 copyDir('server/tests');
 

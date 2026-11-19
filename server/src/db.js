@@ -79,9 +79,23 @@ db.exec(`
     details TEXT,
     created_at TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS user_preferences (
+    user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    theme TEXT NOT NULL DEFAULT 'light',
+    sound_enabled INTEGER NOT NULL DEFAULT 1,
+    enter_is_send INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS whatsapp_sessions (
+    account_id TEXT PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    encrypted_creds TEXT NOT NULL,
+    iv TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
 `);
 
-// Ensure any missing columns on existing users table are added safely
+// Ensure any missing columns on existing tables are added safely
 try {
   const userCols = db.prepare('PRAGMA table_info(users)').all().map(c => c.name);
   if (!userCols.includes('phone_number')) {
@@ -99,6 +113,39 @@ try {
   }
   if (!userCols.includes('updated_at')) {
     db.exec('ALTER TABLE users ADD COLUMN updated_at TEXT');
+  }
+
+  // Multi-tenant isolation columns
+  const accCols = db.prepare('PRAGMA table_info(accounts)').all().map(c => c.name);
+  if (!accCols.includes('user_id')) {
+    db.exec('ALTER TABLE accounts ADD COLUMN user_id INTEGER');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_accounts_user ON accounts(user_id)');
+  }
+
+  const chatCols = db.prepare('PRAGMA table_info(chats)').all().map(c => c.name);
+  if (!chatCols.includes('user_id')) {
+    db.exec('ALTER TABLE chats ADD COLUMN user_id INTEGER');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_chats_user ON chats(user_id, last_ts DESC)');
+  }
+  if (!chatCols.includes('is_pinned')) {
+    db.exec('ALTER TABLE chats ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0');
+  }
+  if (!chatCols.includes('is_archived')) {
+    db.exec('ALTER TABLE chats ADD COLUMN is_archived INTEGER NOT NULL DEFAULT 0');
+  }
+
+  const msgCols = db.prepare('PRAGMA table_info(messages)').all().map(c => c.name);
+  if (!msgCols.includes('user_id')) {
+    db.exec('ALTER TABLE messages ADD COLUMN user_id INTEGER');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id, ts DESC)');
+  }
+  if (!msgCols.includes('delivery_status')) {
+    db.exec("ALTER TABLE messages ADD COLUMN delivery_status TEXT NOT NULL DEFAULT 'sent'");
+  }
+
+  const contactCols = db.prepare('PRAGMA table_info(contacts)').all().map(c => c.name);
+  if (!contactCols.includes('user_id')) {
+    db.exec('ALTER TABLE contacts ADD COLUMN user_id INTEGER');
   }
 } catch (e) {
   // Ignore if already altered

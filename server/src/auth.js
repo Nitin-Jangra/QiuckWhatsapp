@@ -326,12 +326,19 @@ const requireAdmin = (req, res, next) => {
 
 const canAccess = (user, accountId) => {
   if (!isAuthRequired()) return true;
-  return user?.role === 'admin' || Boolean(user?.accountIds?.includes(accountId));
+  if (!user) return false;
+  if (user.role === 'admin') return true;
+  const store = require('./store');
+  const acc = store.getAccount(accountId);
+  if (acc && acc.userId && acc.userId === user.id) return true;
+  return Boolean(user?.accountIds?.includes(accountId));
 };
 
 const allowedAccountIds = (user, allIds) => {
   if (!isAuthRequired()) return allIds;
-  return user?.role === 'admin' ? allIds : allIds.filter(id => user?.accountIds?.includes(id));
+  if (!user) return [];
+  if (user.role === 'admin') return allIds;
+  return allIds.filter(id => canAccess(user, id));
 };
 
 // Slow down password guessing: 10 failures per IP per 10 minutes

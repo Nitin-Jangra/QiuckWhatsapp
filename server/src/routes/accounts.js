@@ -2,11 +2,13 @@ const express = require('express');
 const router = express.Router();
 const store = require('../store');
 const connector = require('../whatsapp/connector-service');
-const { requireAdmin, canAccess } = require('../auth');
+const { canAccess } = require('../auth');
 
-// 1. List all accounts with live session status
+// 1. List all accounts with live session status (strictly tenant-scoped)
 router.get('/', (req, res) => {
-  const accounts = store.getAccounts().filter(a => canAccess(req.user, a.id));
+  const isSuperAdmin = req.user?.role === 'admin' && req.query.all === 'true';
+  const allAccounts = store.getAccounts();
+  const accounts = isSuperAdmin ? allAccounts : allAccounts.filter(a => canAccess(req.user, a.id));
   const data = accounts.map(acc => {
     const status = connector.getAccountStatus(acc.id);
     return {
@@ -21,9 +23,14 @@ router.get('/', (req, res) => {
   res.json({ success: true, data });
 });
 
-// 2. Create new account & initiate QR generation
-router.post('/', requireAdmin, async (req, res) => {
+// 2. Create new account & initiate QR generation (Admins & Tenant Workspace Owners)
+router.post('/', async (req, res) => {
   try {
+    // Staff/Agents cannot create accounts
+    if (req.user?.role === 'agent') {
+      return res.status(403).json({ success: false, error: 'Staff members cannot create WhatsApp accounts' });
+    }
+
     const { name } = req.body;
     if (!name || !name.trim()) {
       return res.status(400).json({ success: false, error: 'Account name is required' });
@@ -35,7 +42,7 @@ router.post('/', requireAdmin, async (req, res) => {
       name: name.trim(),
       status: 'CONNECTING',
       phone: null
-    });
+    }, req.user?.id);
 
     // Start Baileys session asynchronously (skip real socket connection during test suite)
     if (process.env.NODE_ENV !== 'test') {
@@ -78,8 +85,15 @@ router.get('/:id/status', (req, res) => {
 });
 
 // 4. Reconnect / Refresh QR code
-router.post('/:id/connect', requireAdmin, async (req, res) => {
+router.post('/:id/connect', async (req, res) => {
   try {
+    if (req.user?.role === 'agent') {
+      return res.status(403).json({ success: false, error: 'Staff members cannot modify account connections' });
+    }
+    if (!canAccess(req.user, req.params.id)) {
+      return res.status(403).json({ success: false, error: 'No access to this account' });
+    }
+
     const account = store.getAccount(req.params.id);
     if (!account) {
       return res.status(404).json({ success: false, error: 'Account not found' });
@@ -94,8 +108,15 @@ router.post('/:id/connect', requireAdmin, async (req, res) => {
 });
 
 // 5. Disconnect account (without deleting)
-router.post('/:id/disconnect', requireAdmin, async (req, res) => {
+router.post('/:id/disconnect', async (req, res) => {
   try {
+    if (req.user?.role === 'agent') {
+      return res.status(403).json({ success: false, error: 'Staff members cannot modify account connections' });
+    }
+    if (!canAccess(req.user, req.params.id)) {
+      return res.status(403).json({ success: false, error: 'No access to this account' });
+    }
+
     const account = store.getAccount(req.params.id);
     if (!account) {
       return res.status(404).json({ success: false, error: 'Account not found' });
@@ -110,8 +131,15 @@ router.post('/:id/disconnect', requireAdmin, async (req, res) => {
 });
 
 // 6. Delete account permanently (unlinks and wipes session files)
-router.delete('/:id', requireAdmin, async (req, res) => {
+router.delete('/:id', async (req, res) => {
   try {
+    if (req.user?.role === 'agent') {
+      return res.status(403).json({ success: false, error: 'Staff members cannot delete accounts' });
+    }
+    if (!canAccess(req.user, req.params.id)) {
+      return res.status(403).json({ success: false, error: 'No access to this account' });
+    }
+
     await connector.deleteAccount(req.params.id);
     res.json({ success: true, message: 'Account deleted' });
   } catch (err) {

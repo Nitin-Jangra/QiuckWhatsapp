@@ -21,14 +21,17 @@ export default {
         });
       }
 
+      const origin = request.headers.get('origin') || '*';
+
       // Handle CORS preflight options
       if (request.method === 'OPTIONS') {
         return new Response(null, {
           status: 204,
           headers: {
-            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Origin': origin,
+            'Access-Control-Allow-Credentials': 'true',
             'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
-            'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+            'Access-Control-Allow-Headers': 'Content-Type, Authorization, Cookie'
           }
         });
       }
@@ -46,9 +49,10 @@ export default {
           redirect: 'follow'
         });
 
-        // Ensure CORS headers on proxy response
+        // Ensure CORS and cookie credentials on proxy response
         const respHeaders = new Headers(proxyResponse.headers);
-        respHeaders.set('Access-Control-Allow-Origin', '*');
+        respHeaders.set('Access-Control-Allow-Origin', origin);
+        respHeaders.set('Access-Control-Allow-Credentials', 'true');
         return new Response(proxyResponse.body, {
           status: proxyResponse.status,
           statusText: proxyResponse.statusText,

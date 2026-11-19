@@ -40,6 +40,34 @@ export default function Dashboard({ user, onLogout }) {
   const [showAdminPanel, setShowAdminPanel] = useState(false);
   const [showPrivacy, setShowPrivacy] = useState(false);
   const [showTerms, setShowTerms] = useState(false);
+
+  // Theme & User Experience preferences
+  const [theme, setTheme] = useState(() => localStorage.getItem('wacrm_theme') || 'light');
+  const [inboxTab, setInboxTab] = useState('all'); // 'all', 'unread', 'pinned', 'archived'
+  const [soundEnabled, setSoundEnabled] = useState(true);
+
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('wacrm_theme', theme);
+  }, [theme]);
+
+  const playChime = () => {
+    if (!soundEnabled) return;
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(800, ctx.currentTime);
+      osc.frequency.exponentialRampToValueAtTime(1200, ctx.currentTime + 0.15);
+      gain.gain.setValueAtTime(0.08, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.2);
+      osc.start();
+      osc.stop(ctx.currentTime + 0.2);
+    } catch (e) {}
+  };
   // Backend API URL (can be customized via settings or VITE_API_URL)
   const [apiUrl, setApiUrl] = useState(getStoredApi());
   const [showApiSettingsModal, setShowApiSettingsModal] = useState(false);
@@ -223,6 +251,34 @@ export default function Dashboard({ user, onLogout }) {
     }
   };
 
+  const handleTogglePin = async (chat) => {
+    if (!chat) return;
+    const nextPinned = !chat.isPinned;
+    try {
+      await fetch(endpoint('/api/chats/pin'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountId: chat.accountId, remoteJid: chat.remoteJid, isPinned: nextPinned })
+      });
+      setSelectedChat(prev => prev ? { ...prev, isPinned: nextPinned } : null);
+      fetchChats();
+    } catch (e) {}
+  };
+
+  const handleToggleArchive = async (chat) => {
+    if (!chat) return;
+    const nextArchived = !chat.isArchived;
+    try {
+      await fetch(endpoint('/api/chats/archive'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountId: chat.accountId, remoteJid: chat.remoteJid, isArchived: nextArchived })
+      });
+      setSelectedChat(prev => prev ? { ...prev, isArchived: nextArchived } : null);
+      fetchChats();
+    } catch (e) {}
+  };
+
   // Auto-scroll messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -344,6 +400,9 @@ export default function Dashboard({ user, onLogout }) {
     sse.addEventListener('message', (e) => {
       try {
         const msg = JSON.parse(e.data);
+        if (!msg.fromMe) {
+          playChime();
+        }
         const open = selectedChatRef.current;
         if (open && !msg.fromMe && open.accountId === msg.accountId && open.remoteJid === msg.remoteJid) {
           markReadRef.current?.(open);
@@ -627,6 +686,11 @@ export default function Dashboard({ user, onLogout }) {
 
   const filteredChats = chats.filter(c => {
     if (selectedAccountId !== 'all' && c.accountId !== selectedAccountId) return false;
+    if (inboxTab === 'unread' && (!c.unreadCount || c.unreadCount <= 0)) return false;
+    if (inboxTab === 'pinned' && !c.isPinned) return false;
+    if (inboxTab === 'archived' && !c.isArchived) return false;
+    if (inboxTab === 'all' && c.isArchived) return false;
+
     if (!searchQuery.trim()) return true;
     const q = searchQuery.toLowerCase();
     return (
@@ -699,6 +763,24 @@ export default function Dashboard({ user, onLogout }) {
               <span className="d-none d-xl-inline small">
                 {apiUrl ? 'Server: Custom' : 'Server API'}
               </span>
+            </button>
+
+            {/* Theme Toggle Button */}
+            <button
+              className="btn btn-sm btn-outline-secondary d-flex align-items-center gap-1 py-1 px-2"
+              onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
+              title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
+            >
+              <i className={`bi ${theme === 'dark' ? 'bi-sun-fill text-warning' : 'bi-moon-stars-fill'}`}></i>
+            </button>
+
+            {/* Sound Toggle Button */}
+            <button
+              className={`btn btn-sm ${soundEnabled ? 'btn-outline-secondary' : 'btn-outline-danger'} d-flex align-items-center gap-1 py-1 px-2`}
+              onClick={() => setSoundEnabled(s => !s)}
+              title={soundEnabled ? 'Mute incoming audio notifications' : 'Enable incoming audio notifications'}
+            >
+              <i className={`bi ${soundEnabled ? 'bi-volume-up-fill' : 'bi-volume-mute-fill'}`}></i>
             </button>
 
             {/* Add Account Button (admins only) */}
@@ -817,6 +899,40 @@ export default function Dashboard({ user, onLogout }) {
                 );
               })}
             </div>
+
+            {/* Inbox View Tabs: All, Unread, Pinned, Archived */}
+            <div className="d-flex gap-1 overflow-x-auto pt-2 pb-1 border-top" style={{ scrollbarWidth: 'none' }}>
+              <button
+                className={`btn btn-sm rounded-pill text-nowrap py-0 px-2 ${inboxTab === 'all' ? 'btn-primary' : 'btn-outline-secondary border-0'}`}
+                style={{ fontSize: '0.78rem' }}
+                onClick={() => setInboxTab('all')}
+              >
+                All ({chats.filter(c => !c.isArchived).length})
+              </button>
+              <button
+                className={`btn btn-sm rounded-pill text-nowrap py-0 px-2 ${inboxTab === 'unread' ? 'btn-primary' : 'btn-outline-secondary border-0'}`}
+                style={{ fontSize: '0.78rem' }}
+                onClick={() => setInboxTab('unread')}
+              >
+                Unread ({chats.filter(c => c.unreadCount > 0).length})
+              </button>
+              <button
+                className={`btn btn-sm rounded-pill text-nowrap py-0 px-2 d-flex align-items-center gap-1 ${inboxTab === 'pinned' ? 'btn-primary' : 'btn-outline-secondary border-0'}`}
+                style={{ fontSize: '0.78rem' }}
+                onClick={() => setInboxTab('pinned')}
+              >
+                <i className="bi bi-pin-angle-fill" style={{ fontSize: '0.7rem' }}></i>
+                <span>Pinned ({chats.filter(c => c.isPinned).length})</span>
+              </button>
+              <button
+                className={`btn btn-sm rounded-pill text-nowrap py-0 px-2 d-flex align-items-center gap-1 ${inboxTab === 'archived' ? 'btn-primary' : 'btn-outline-secondary border-0'}`}
+                style={{ fontSize: '0.78rem' }}
+                onClick={() => setInboxTab('archived')}
+              >
+                <i className="bi bi-archive-fill" style={{ fontSize: '0.7rem' }}></i>
+                <span>Archived ({chats.filter(c => c.isArchived).length})</span>
+              </button>
+            </div>
           </div>
 
           {/* Search Bar & New Chat Button */}
@@ -918,6 +1034,7 @@ export default function Dashboard({ user, onLogout }) {
                     <div className="flex-grow-1 overflow-hidden">
                       <div className="d-flex justify-content-between align-items-baseline">
                         <span className={`text-truncate ${chat.unreadCount ? 'fw-bold' : 'fw-semibold'}`}>
+                          {chat.isPinned && <i className="bi bi-pin-angle-fill text-warning me-1" title="Pinned Chat"></i>}
                           {chat.customerName || formatPhone(chat.customerPhone)}
                         </span>
                         <span className="text-secondary flex-shrink-0 ms-2" style={{ fontSize: '0.72rem' }}>
@@ -986,6 +1103,24 @@ export default function Dashboard({ user, onLogout }) {
               </div>
 
               <div className="d-flex align-items-center gap-2">
+                {/* Pin / Unpin Button */}
+                <button
+                  className={`btn btn-sm ${selectedChat.isPinned ? 'btn-warning text-dark' : 'btn-outline-secondary'}`}
+                  onClick={() => handleTogglePin(selectedChat)}
+                  title={selectedChat.isPinned ? 'Unpin Conversation' : 'Pin Conversation to Top'}
+                >
+                  <i className={`bi ${selectedChat.isPinned ? 'bi-pin-fill' : 'bi-pin'}`}></i>
+                </button>
+
+                {/* Archive / Unarchive Button */}
+                <button
+                  className={`btn btn-sm ${selectedChat.isArchived ? 'btn-info text-dark' : 'btn-outline-secondary'}`}
+                  onClick={() => handleToggleArchive(selectedChat)}
+                  title={selectedChat.isArchived ? 'Unarchive Conversation' : 'Archive Conversation'}
+                >
+                  <i className={`bi ${selectedChat.isArchived ? 'bi-archive-fill' : 'bi-archive'}`}></i>
+                </button>
+
                 <button
                   className="btn btn-sm btn-outline-primary d-flex align-items-center gap-1"
                   onClick={handleSyncWithPhone}
@@ -1212,9 +1347,15 @@ export default function Dashboard({ user, onLogout }) {
                 </button>
                 <input
                   type="text"
-                  placeholder={selectedFile ? `Add caption to ${selectedFile.name}...` : 'Type a message'}
+                  placeholder={selectedFile ? `Add caption to ${selectedFile.name}...` : 'Type a message (Enter to send)'}
                   value={replyText}
                   onChange={e => setReplyText(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSendMessage(e);
+                    }
+                  }}
                   disabled={isSending}
                 />
               </div>

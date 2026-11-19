@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const connector = require('../whatsapp/connector-service');
-const { canAccess } = require('../auth');
+const auth = require('../auth');
 
 const clients = new Set();
 
@@ -19,8 +19,8 @@ setInterval(() => {
 function broadcast(eventType, data) {
   const payload = `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
   for (const client of clients) {
-    // Staff only receive events for accounts they are allowed to see
-    if (data?.accountId && !canAccess(client.user, data.accountId)) continue;
+    // Multi-tenant check: User only receives events for accounts they own or have access to
+    if (data?.accountId && !auth.canAccess(client.user, data.accountId)) continue;
     try {
       client.write(payload);
     } catch (e) {
@@ -37,6 +37,22 @@ connector.on('history_synced', (data) => broadcast('history_synced', data));
 connector.on('chats_updated', (data) => broadcast('chats_updated', data));
 
 router.get('/', (req, res) => {
+  // Support authentication via query param token for native EventSource
+  if (!req.user && req.query.token) {
+    const uid = auth.readToken(req.query.token);
+    if (uid) {
+      const u = auth.getUserById(uid);
+      if (u && u.active && u.status !== 'suspended') {
+        req.user = auth.publicUser(u);
+      }
+    }
+  }
+
+  // Require auth if system requires auth
+  if (auth.isAuthRequired && process.env.AUTH_REQUIRED === 'true' && !req.user) {
+    return res.status(401).json({ success: false, error: 'Authentication required' });
+  }
+
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');

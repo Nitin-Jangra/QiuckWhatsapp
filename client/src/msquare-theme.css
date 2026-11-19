@@ -31,6 +31,27 @@
   --bs-primary-text-emphasis: #c2410c;
 }
 
+[data-theme="dark"] {
+  color-scheme: dark;
+  --bg-primary: #0b1120;
+  --bg-secondary: #0f172a;
+  --bg-card: #1e293b;
+  --bg-card-header: #1a2234;
+  --bg-active-chat: #334155;
+  --text-primary: #f8fafc;
+  --text-secondary: #cbd5e1;
+  --text-muted: #94a3b8;
+  --border-subtle: #334155;
+  --border-strong: #475569;
+  --card-shadow: 0 10px 25px -4px rgba(0, 0, 0, 0.4);
+  --bs-body-bg: var(--bg-primary);
+  --bs-body-color: var(--text-primary);
+  --bs-border-color: var(--border-subtle);
+  --bs-primary-bg-subtle: #431407;
+  --bs-primary-border-subtle: #7c2d12;
+  --bs-primary-text-emphasis: #fdba74;
+}
+
 body { height: 100vh; overflow: hidden; }
 #root { height: 100vh; }
 
