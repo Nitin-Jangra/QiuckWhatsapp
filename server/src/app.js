@@ -108,7 +108,7 @@ if (staticDir) {
 let server = null;
 if (process.env.NODE_ENV !== 'test') {
   server = app.listen(PORT, async () => {
-    console.log(`[WaCRM] Single-User Multi-Account WhatsApp Hub running on http://localhost:${PORT}`);
+    console.log(`[WaCRM] Multi-Account WhatsApp Platform running on http://localhost:${PORT}`);
     try {
       await connector.autoRestore();
     } catch (err) {

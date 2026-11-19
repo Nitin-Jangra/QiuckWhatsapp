@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useRef } from 'react';
-import TeamModal from '../components/TeamModal';
 import AdminPanelModal from '../components/AdminPanelModal';
 import PrivacyPolicyModal from '../components/PrivacyPolicyModal';
 import TermsConditionsModal from '../components/TermsConditionsModal';
@@ -36,7 +35,6 @@ const getStoredApi = () => {
 
 export default function Dashboard({ user, onLogout }) {
   const isAdmin = !user || user?.role === 'admin';
-  const [showTeam, setShowTeam] = useState(false);
   const [showAdminPanel, setShowAdminPanel] = useState(false);
   const [showPrivacy, setShowPrivacy] = useState(false);
   const [showTerms, setShowTerms] = useState(false);
@@ -68,10 +66,8 @@ export default function Dashboard({ user, onLogout }) {
       osc.stop(ctx.currentTime + 0.2);
     } catch (e) {}
   };
-  // Backend API URL (can be customized via settings or VITE_API_URL)
+  // Backend API URL (can be customized via VITE_API_URL or environment)
   const [apiUrl, setApiUrl] = useState(getStoredApi());
-  const [showApiSettingsModal, setShowApiSettingsModal] = useState(false);
-  const [tempApiUrl, setTempApiUrl] = useState(apiUrl);
   const [apiErrorNotice, setApiErrorNotice] = useState('');
 
   const endpoint = (path) => {
@@ -753,18 +749,6 @@ export default function Dashboard({ user, onLogout }) {
               <span className="badge bg-secondary rounded-pill">{accounts.length}</span>
             </button>
 
-            {/* Server Settings Button */}
-            <button
-              className={`btn btn-sm ${apiUrl ? 'btn-outline-secondary' : 'btn-outline-warning'} d-flex align-items-center gap-1 py-1 px-2`}
-              onClick={() => { setTempApiUrl(apiUrl); setShowApiSettingsModal(true); }}
-              title="Configure WhatsApp Backend Server URL"
-            >
-              <i className="bi bi-hdd-network"></i>
-              <span className="d-none d-xl-inline small">
-                {apiUrl ? 'Server: Custom' : 'Server API'}
-              </span>
-            </button>
-
             {/* Theme Toggle Button */}
             <button
               className="btn btn-sm btn-outline-secondary d-flex align-items-center gap-1 py-1 px-2"
@@ -806,11 +790,6 @@ export default function Dashboard({ user, onLogout }) {
               </button>
             )}
 
-            {user && isAdmin && (
-              <button className="wa-icon-btn" title="Team" onClick={() => setShowTeam(true)}>
-                <i className="bi bi-people"></i>
-              </button>
-            )}
             {user && onLogout && (
               <div className="d-flex align-items-center gap-1 ps-2 border-start">
                 <span className="small fw-semibold d-none d-md-inline">{user?.name}</span>
@@ -832,9 +811,9 @@ export default function Dashboard({ user, onLogout }) {
           </div>
           <button
             className="btn btn-sm btn-dark py-0 px-2 ms-2"
-            onClick={() => { setTempApiUrl(apiUrl); setShowApiSettingsModal(true); }}
+            onClick={() => { fetchAccounts(); fetchChats(); }}
           >
-            Configure Server URL
+            Retry Connection
           </button>
         </div>
       )}
@@ -1760,93 +1739,6 @@ export default function Dashboard({ user, onLogout }) {
         </div>
       )}
 
-      {/* Backend Server Settings Modal */}
-      {showApiSettingsModal && (
-        <div className="modal show d-block" style={{ backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 1060 }}>
-          <div className="modal-dialog modal-dialog-centered">
-            <div className="modal-content shadow-lg border-0">
-              <div className="modal-header border-bottom py-2">
-                <h6 className="modal-title fw-bold">
-                  <i className="bi bi-hdd-network text-primary me-2"></i>
-                  WhatsApp Server Settings
-                </h6>
-                <button
-                  type="button"
-                  className="btn-close"
-                  onClick={() => setShowApiSettingsModal(false)}
-                ></button>
-              </div>
-              <div className="modal-body p-3">
-                <p className="text-muted small mb-3">
-                  Enter the URL where your Node.js WhatsApp backend is running (e.g. Render, Railway, ngrok, or local).
-                  Leave blank to use default / same-origin proxy.
-                </p>
-                <div className="mb-3">
-                  <label className="form-label small fw-semibold">Backend Server URL</label>
-                  <input
-                    type="url"
-                    className="form-control form-control-sm"
-                    placeholder="https://your-backend.onrender.com (or http://localhost:5000)"
-                    value={tempApiUrl}
-                    onChange={e => setTempApiUrl(e.target.value)}
-                  />
-                  <div className="form-text" style={{ fontSize: '0.75rem' }}>
-                    Tip: If running backend locally, you can use ngrok (<code>ngrok http 5000</code>) or enter your hosted server URL.
-                  </div>
-                </div>
-              </div>
-              <div className="modal-footer border-top py-2">
-                {apiUrl && (
-                  <button
-                    type="button"
-                    className="btn btn-outline-danger btn-sm me-auto"
-                    onClick={() => {
-                      localStorage.removeItem('wacrm_api_url');
-                      setApiUrl('');
-                      setTempApiUrl('');
-                      setShowApiSettingsModal(false);
-                      setTimeout(() => {
-                        fetchAccounts();
-                        fetchChats();
-                      }, 100);
-                    }}
-                  >
-                    Reset to Default
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className="btn btn-secondary btn-sm"
-                  onClick={() => setShowApiSettingsModal(false)}
-                >
-                  Cancel
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-primary btn-sm"
-                  onClick={() => {
-                    const cleaned = tempApiUrl.trim().replace(/\/$/, '');
-                    if (cleaned) {
-                      localStorage.setItem('wacrm_api_url', cleaned);
-                    } else {
-                      localStorage.removeItem('wacrm_api_url');
-                    }
-                    setApiUrl(cleaned);
-                    setShowApiSettingsModal(false);
-                    setTimeout(() => {
-                      fetchAccounts();
-                      fetchChats();
-                    }, 100);
-                  }}
-                >
-                  Save & Connect
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-      {showTeam && <TeamModal accounts={accounts} currentUserId={user?.id} onClose={() => setShowTeam(false)} />}
       {showAdminPanel && <AdminPanelModal currentUserId={user?.id} onClose={() => setShowAdminPanel(false)} />}
       {showPrivacy && <PrivacyPolicyModal onClose={() => setShowPrivacy(false)} />}
       {showTerms && <TermsConditionsModal onClose={() => setShowTerms(false)} />}
