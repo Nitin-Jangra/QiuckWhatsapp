@@ -147,7 +147,9 @@ async function sendViaSmtp({ to, otp, purpose }) {
     throw new Error('Nodemailer is not installed or SMTP transport could not be initialized');
   }
 
-  const from = process.env.SMTP_FROM || `"WaCRM Web" <${process.env.SMTP_USER}>`;
+  const from = process.env.SMTP_FROM ||
+               process.env.EMAIL_FROM ||
+               (process.env.SMTP_FROM_NAME ? `"${process.env.SMTP_FROM_NAME}" <${process.env.SMTP_USER}>` : `"WaCRM Web" <${process.env.SMTP_USER}>`);
   const subject = purpose === 'reset_password'
     ? `${otp} is your WaCRM password reset code`
     : `${otp} is your WaCRM verification code`;
