@@ -20,9 +20,18 @@ self.addEventListener('fetch', (e) => {
   if (req.method !== 'GET' || url.origin !== location.origin) return;
   if (url.pathname.startsWith('/api') || url.pathname.startsWith('/media')) return;
 
-  // Page loads: network first, fall back to the cached shell when offline
+  // Page loads: network first with timeout, fall back to the cached shell when slow or offline
   if (req.mode === 'navigate') {
-    e.respondWith(fetch(req).catch(() => caches.match('/')));
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 6000);
+    e.respondWith(
+      fetch(req, { signal: controller.signal })
+        .then((res) => {
+          clearTimeout(timer);
+          return res;
+        })
+        .catch(() => caches.match('/'))
+    );
     return;
   }
   // Built assets have hashed names: cache first

@@ -10,7 +10,11 @@ export default function App() {
 
   const loadMe = async () => {
     try {
-      const json = await (await nativeFetch('/api/auth/me')).json();
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 6000);
+      const res = await nativeFetch('/api/auth/me', { signal: controller.signal });
+      clearTimeout(timer);
+      const json = await res.json();
       const authRequired = Boolean(json.data?.authRequired);
       setState({
         loading: false,
@@ -19,8 +23,8 @@ export default function App() {
         authRequired
       });
     } catch (e) {
-      // If offline or error, open dashboard directly without blocking
-      setState({ loading: false, user: null, needsSetup: false, authRequired: false });
+      // If offline or error, release the loading screen so the browser never hangs
+      setState({ loading: false, user: null, needsSetup: false, authRequired: true, offline: true });
     }
   };
 

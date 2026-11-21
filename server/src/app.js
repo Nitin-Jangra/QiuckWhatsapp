@@ -2,7 +2,11 @@ require('dotenv').config();
 // DATA_DIR may start with "~" (home directory). Managed hosts that deploy each build into a fresh
 // version folder need data stored outside the app folder, or every redeploy wipes it.
 if (process.env.DATA_DIR?.startsWith('~')) {
-  process.env.DATA_DIR = require('path').join(require('os').homedir(), process.env.DATA_DIR.slice(1));
+  if (process.platform === 'win32') {
+    process.env.DATA_DIR = require('path').join(__dirname, '..', '..', 'data');
+  } else {
+    process.env.DATA_DIR = require('path').join(require('os').homedir(), process.env.DATA_DIR.slice(1));
+  }
 }
 const express = require('express');
 const cors = require('cors');

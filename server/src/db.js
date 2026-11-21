@@ -220,8 +220,16 @@ function sqliteEngine() {
     type: 'sqlite',
     get raw() { return conn; },
     async init() {
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      conn = openSqlite(file);
+      let dbFile = file;
+      try {
+        fs.mkdirSync(path.dirname(dbFile), { recursive: true });
+        conn = openSqlite(dbFile);
+      } catch (e) {
+        console.warn(`[WaCRM] Database directory error at ${dbFile} (${e.message}). Falling back to local ./data/wacrm.db`);
+        dbFile = path.join(__dirname, '..', '..', 'data', 'wacrm.db');
+        fs.mkdirSync(path.dirname(dbFile), { recursive: true });
+        conn = openSqlite(dbFile);
+      }
       conn.exec(SQLITE_SCHEMA);
       for (const [table, col, def] of SQLITE_COLUMNS) {
         const cols = conn.prepare(`PRAGMA table_info(${table})`).all().map(c => c.name);

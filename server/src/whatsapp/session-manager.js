@@ -128,18 +128,32 @@ class WhatsAppSessionManager extends EventEmitter {
   }
 
   ensureMediaDirectory() {
-    if (!fs.existsSync(this.mediaBasePath)) {
-      fs.mkdirSync(this.mediaBasePath, { recursive: true });
+    try {
+      if (!fs.existsSync(this.mediaBasePath)) {
+        fs.mkdirSync(this.mediaBasePath, { recursive: true });
+      }
+    } catch (e) {
+      console.warn(`[WaCRM] Media directory error at ${this.mediaBasePath} (${e.message}). Falling back to local ./data/media`);
+      this.mediaBasePath = path.join(__dirname, '..', '..', 'data', 'media');
+      try { fs.mkdirSync(this.mediaBasePath, { recursive: true }); } catch (e2) {}
     }
   }
 
   getAccountSessionDir(accountId) {
     const safeId = (accountId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_');
-    const dir = path.join(this.sessionBasePath, safeId);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
+    let dir = path.join(this.sessionBasePath, safeId);
+    try {
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      return dir;
+    } catch (e) {
+      console.warn(`[WaCRM] Session directory error at ${dir} (${e.message}). Falling back to local ./data/wa_sessions`);
+      this.sessionBasePath = path.join(__dirname, '..', '..', 'data', 'wa_sessions');
+      dir = path.join(this.sessionBasePath, safeId);
+      try { fs.mkdirSync(dir, { recursive: true }); } catch (e2) {}
+      return dir;
     }
-    return dir;
   }
 
   getAccountStatus(accountId) {
