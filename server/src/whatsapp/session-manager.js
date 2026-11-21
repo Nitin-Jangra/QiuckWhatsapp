@@ -237,13 +237,28 @@ class WhatsAppSessionManager extends EventEmitter {
     // Skip protocol notifications with no content
     if (!content.text && !content.mediaType) return null;
 
+    const isGroup = remoteJid.endsWith('@g.us');
     const withoutDomain = remoteJid.split('@')[0];
     const cleanDigits = withoutDomain.split(':')[0].replace(/[^0-9]/g, '');
-    const customerPhone = cleanDigits ? `+${cleanDigits}` : remoteJid;
+    const customerPhone = isGroup ? 'Group' : (cleanDigits ? `+${cleanDigits}` : remoteJid);
 
     if (cleanDigits && remoteJid) {
       this.destinationJidCache.set(accountId + '|' + (cleanDigits), remoteJid);
       this.destinationJidCache.set(accountId + '|' + (`+${cleanDigits}`), remoteJid);
+    }
+
+    let groupSubject = '';
+    if (isGroup) {
+      groupSubject = await store.getContactName(accountId, remoteJid);
+      if (!groupSubject && sock?.groupMetadata) {
+        try {
+          const meta = await sock.groupMetadata(remoteJid);
+          if (meta?.subject) {
+            groupSubject = meta.subject;
+            await store.saveContact(accountId, remoteJid, groupSubject);
+          }
+        } catch (e) {}
+      }
     }
 
     let mediaUrl = null;
@@ -252,12 +267,17 @@ class WhatsAppSessionManager extends EventEmitter {
       mediaUrl = await this.downloadAndSaveIncomingMedia(sock, msg, accountId, content.mediaType, content.mimetype);
     }
 
+    const participantPhone = msg.key?.participant ? msg.key.participant.split('@')[0].split(':')[0].replace(/[^0-9]/g, '') : '';
+    const senderDisplay = msg.pushName || (participantPhone ? `+${participantPhone}` : '');
+
     const messageRecord = {
       id: msgId,
       accountId,
       remoteJid,
       customerPhone,
-      customerName: msg.pushName || '',
+      customerName: isGroup ? (groupSubject || 'WhatsApp Group') : (msg.pushName || ''),
+      senderName: senderDisplay,
+      isGroup,
       fromMe,
       text: content.text,
       mediaType: content.mediaType,
@@ -422,6 +442,7 @@ class WhatsAppSessionManager extends EventEmitter {
           });
 
           this.emit('status', { accountId, status: 'CONNECTED', phone, name });
+          this.syncGroups(accountId).catch(() => {});
         }
 
         if (connection === 'close') {
@@ -515,13 +536,17 @@ class WhatsAppSessionManager extends EventEmitter {
         }
 
         // Register all chats from phone - cache destination JIDs for routing,
-        // but avoid populating hundreds of empty ghost chats without unread messages or real content
+        // and ensure groups and active chats are preserved
         if (Array.isArray(chats)) {
           for (const c of chats) {
+            const isGroup = c.id?.endsWith('@g.us');
             const clean = c.id.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
             if (clean) this.destinationJidCache.set(accountId + '|' + (clean), c.id);
-            if (c.unreadCount > 0) {
-              await store.saveChat(accountId, c);
+            if (isGroup || c.unreadCount > 0) {
+              await store.saveChat(accountId, {
+                ...c,
+                isGroup: Boolean(isGroup)
+              });
             }
           }
         }
@@ -534,6 +559,8 @@ class WhatsAppSessionManager extends EventEmitter {
             } catch (err) {}
           }
         }
+
+        this.syncGroups(accountId).catch(() => {});
 
         this.emit('history_synced', {
           accountId,
@@ -553,6 +580,21 @@ class WhatsAppSessionManager extends EventEmitter {
       sock.ev.on('chats.update', async (updatedChats) => {
         for (const c of updatedChats) {
           await store.saveChat(accountId, c).catch(() => {});
+        }
+        this.emit('chats_updated', { accountId });
+      });
+
+      // 3b. Group updates (name changes, subjects)
+      sock.ev.on('groups.update', async (groupUpdates) => {
+        for (const g of groupUpdates) {
+          if (g.id && g.subject) {
+            await store.saveContact(accountId, g.id, g.subject);
+            await store.updateChat(accountId, g.id, {
+              customerName: g.subject,
+              name: g.subject,
+              isGroup: true
+            });
+          }
         }
         this.emit('chats_updated', { accountId });
       });
@@ -659,15 +701,18 @@ class WhatsAppSessionManager extends EventEmitter {
       this.recordMessageId(sentMessageId, accountId);
     }
 
+    const isGroup = jid.endsWith('@g.us');
     const cleanDigits = jid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
-    const customerPhone = cleanDigits ? `+${cleanDigits}` : jid;
+    const customerPhone = isGroup ? 'Group' : (cleanDigits ? `+${cleanDigits}` : jid);
+    const customerName = isGroup ? ((await store.getContactName(accountId, jid)) || 'WhatsApp Group') : '';
 
     const record = {
       id: sentMessageId || `sent_${Date.now()}`,
       accountId,
       remoteJid: jid,
       customerPhone,
-      customerName: '',
+      customerName,
+      isGroup,
       fromMe: true,
       text,
       mediaType: null,
@@ -727,15 +772,18 @@ class WhatsAppSessionManager extends EventEmitter {
     fs.writeFileSync(path.join(accountMediaDir, diskFilename), mediaBuffer);
     const mediaUrl = `/api/media/${accountId}/${diskFilename}`;
 
+    const isGroup = jid.endsWith('@g.us');
     const cleanDigits = jid.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
-    const customerPhone = cleanDigits ? `+${cleanDigits}` : jid;
+    const customerPhone = isGroup ? 'Group' : (cleanDigits ? `+${cleanDigits}` : jid);
+    const customerName = isGroup ? ((await store.getContactName(accountId, jid)) || 'WhatsApp Group') : '';
 
     const record = {
       id: sentMessageId,
       accountId,
       remoteJid: jid,
       customerPhone,
-      customerName: '',
+      customerName,
+      isGroup,
       fromMe: true,
       text: textCaption,
       mediaType: mediaType || 'document',
@@ -848,6 +896,37 @@ class WhatsAppSessionManager extends EventEmitter {
     } catch (err) {
       return false;
     }
+  }
+
+  // Fetch all WhatsApp groups the connected account participates in
+  async syncGroups(accountId) {
+    if (!accountId) return [];
+    const session = this.sessions.get(accountId);
+    if (!session || !session.sock || session.status !== 'CONNECTED') return [];
+    try {
+      if (typeof session.sock.groupFetchAllParticipating === 'function') {
+        const groups = await session.sock.groupFetchAllParticipating();
+        const results = [];
+        for (const [groupId, g] of Object.entries(groups || {})) {
+          const subject = g.subject || g.name || 'WhatsApp Group';
+          await store.saveContact(accountId, groupId, subject);
+          const saved = await store.saveChat(accountId, {
+            id: groupId,
+            name: subject,
+            subject,
+            isGroup: true,
+            customerPhone: 'Group',
+            conversationTimestamp: g.creation || Math.floor(Date.now() / 1000)
+          });
+          results.push(saved);
+        }
+        this.emit('chats_updated', { accountId });
+        return results;
+      }
+    } catch (err) {
+      console.warn(`[WaCRM] Error syncing groups for ${accountId}:`, err.message);
+    }
+    return [];
   }
 
   isDuplicateMessage(messageId, accountId = '') {

@@ -218,6 +218,28 @@ test('Unified Inbox - Pin, Archive, and Filtering', async () => {
     const mainFeed = (await (await get(base, '/api/chats', userCookie)).json()).data;
     assert.ok(mainFeed.some(c => c.remoteJid === '919999000001@s.whatsapp.net'));
     assert.ok(!mainFeed.some(c => c.remoteJid === '919999000002@s.whatsapp.net'));
+
+    // 6. WhatsApp Groups are visible with group title and isGroup: true
+    await store.saveChat(accId, {
+      id: '120363000000000001@g.us',
+      name: 'Marketing Team Group',
+      isGroup: true
+    });
+    await store.addMessage({
+      id: 'msg_grp_1',
+      accountId: accId,
+      remoteJid: '120363000000000001@g.us',
+      text: 'Hello marketing team!',
+      fromMe: false,
+      timestamp: new Date().toISOString()
+    });
+
+    const feedWithGroup = (await (await get(base, '/api/chats', userCookie)).json()).data;
+    const groupChat = feedWithGroup.find(c => c.remoteJid === '120363000000000001@g.us');
+    assert.ok(groupChat, 'Group chat must be visible in inbox');
+    assert.strictEqual(groupChat.customerName, 'Marketing Team Group');
+    assert.strictEqual(groupChat.customerPhone, 'Group');
+    assert.strictEqual(groupChat.isGroup, true);
   });
 });
 

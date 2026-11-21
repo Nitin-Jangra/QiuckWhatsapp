@@ -106,6 +106,11 @@ router.post('/sync', need('chats.view'), async (req, res) => {
     if (accountId && !await canAccess(req.user, accountId)) return deny(res);
     if (accountId && remoteJid) {
       await connector.syncChatFromPhone(accountId, remoteJid);
+    } else {
+      const allAccountIds = accountId ? [accountId] : (await store.getAccounts()).map(a => a.id);
+      for (const accId of allAccountIds) {
+        await connector.syncGroups(accId).catch(() => {});
+      }
     }
     const chats = await store.getChats(accountId || await allowedAccountIds(req.user, (await store.getAccounts()).map(a => a.id)));
     res.json({ success: true, message: 'Chats synchronized', data: chats });

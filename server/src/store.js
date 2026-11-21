@@ -147,8 +147,9 @@ class Store {
     const acc = await this.getAccount(accountId);
     const effectiveUserId = userId || acc?.userId || existing.userId || null;
 
+    const isGroup = Boolean(chat.isGroup || remoteJid.endsWith('@g.us') || existing.isGroup);
     const clean = digitsOf(remoteJid);
-    const contactName = chat.name || (await this.getContactName(accountId, remoteJid)) || '';
+    const contactName = chat.name || chat.subject || (await this.getContactName(accountId, remoteJid)) || '';
 
     let lastTimestamp = existing.lastTimestamp || new Date().toISOString();
     if (chat.conversationTimestamp) {
@@ -165,10 +166,11 @@ class Store {
       accountId,
       userId: effectiveUserId,
       remoteJid,
-      customerPhone: existing.customerPhone || (clean ? `+${clean}` : remoteJid),
-      customerName: contactName || existing.customerName || '',
+      isGroup,
+      customerPhone: isGroup ? 'Group' : (existing.customerPhone || (clean ? `+${clean}` : remoteJid)),
+      customerName: contactName || existing.customerName || (isGroup ? 'WhatsApp Group' : ''),
       unreadCount: chat.unreadCount !== undefined ? Math.max(0, chat.unreadCount) : existing.unreadCount || 0,
-      lastMessage: existing.lastMessage || 'Chat synchronized from phone',
+      lastMessage: existing.lastMessage || (isGroup ? 'Group conversation' : 'Chat synchronized from phone'),
       lastTimestamp,
       isPinned,
       isArchived
@@ -217,6 +219,8 @@ class Store {
     const allChats = await this.getChats(filter);
     let clearedCount = 0;
     for (const chat of allChats) {
+      // NEVER delete WhatsApp groups when clearing empty direct chats
+      if (chat.isGroup || chat.remoteJid?.endsWith('@g.us')) continue;
       if (chat.lastMessage === defaultPlaceholder) {
         const msgs = await this.getMessages(chat.accountId, chat.remoteJid, 1);
         if (msgs.length === 0) {
@@ -243,15 +247,19 @@ class Store {
 
     const acc = await this.getAccount(msg.accountId);
     const effectiveUserId = userId || msg.userId || acc?.userId || null;
-    const customerName = msg.customerName || (await this.getContactName(msg.accountId, msg.remoteJid)) || '';
+    const isGroup = Boolean(msg.remoteJid?.endsWith('@g.us') || msg.isGroup);
+    const existingContactName = await this.getContactName(msg.accountId, msg.remoteJid);
+    const resolvedChatName = isGroup ? (existingContactName || msg.customerName || 'WhatsApp Group') : (msg.customerName || existingContactName || '');
 
     const record = {
       id: msg.id,
       accountId: msg.accountId,
       userId: effectiveUserId,
       remoteJid: msg.remoteJid,
-      customerPhone: msg.customerPhone || msg.remoteJid,
-      customerName,
+      customerPhone: isGroup ? 'Group' : (msg.customerPhone || msg.remoteJid),
+      customerName: resolvedChatName,
+      senderName: msg.senderName || (msg.fromMe ? null : msg.customerName) || null,
+      isGroup,
       text: msg.text || '',
       mediaType: msg.mediaType || null,
       mediaUrl: msg.mediaUrl || null,
@@ -269,6 +277,7 @@ class Store {
       const key = `${record.accountId}:${record.remoteJid}`;
       const chat = parse(await db.get(SQL.chatGet, key)) || {};
       const isNewest = !chat.lastTimestamp || record.timestamp >= chat.lastTimestamp;
+      const isGroupChat = Boolean(isGroup || chat.isGroup);
 
       const next = {
         ...chat,
@@ -276,8 +285,9 @@ class Store {
         accountId: record.accountId,
         userId: effectiveUserId,
         remoteJid: record.remoteJid,
-        customerPhone: chat.customerPhone || record.customerPhone,
-        customerName: customerName || chat.customerName || '',
+        isGroup: isGroupChat,
+        customerPhone: isGroupChat ? 'Group' : (chat.customerPhone || record.customerPhone),
+        customerName: isGroupChat ? (chat.customerName || resolvedChatName || 'WhatsApp Group') : (resolvedChatName || chat.customerName || ''),
         unreadCount: record.fromMe ? 0 : (chat.unreadCount || 0) + (options.history ? 0 : 1),
         isPinned: Boolean(chat.isPinned),
         isArchived: Boolean(chat.isArchived)
@@ -291,7 +301,7 @@ class Store {
       await db.run(SQL.chatPut, key, record.accountId, effectiveUserId, next.lastTimestamp || '', next.isPinned ? 1 : 0, next.isArchived ? 1 : 0, JSON.stringify(next));
     });
 
-    if (customerName) await this.saveContact(record.accountId, record.remoteJid, customerName, effectiveUserId);
+    if (resolvedChatName && !isGroup) await this.saveContact(record.accountId, record.remoteJid, resolvedChatName, effectiveUserId);
     return record;
   }
 

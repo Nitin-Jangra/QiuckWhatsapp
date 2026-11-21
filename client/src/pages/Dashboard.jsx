@@ -754,6 +754,7 @@ export default function Dashboard({ user, onLogout }) {
     if (inboxTab === 'unread' && (!c.unreadCount || c.unreadCount <= 0)) return false;
     if (inboxTab === 'pinned' && !c.isPinned) return false;
     if (inboxTab === 'archived' && !c.isArchived) return false;
+    if (inboxTab === 'groups' && (!c.isGroup && !c.remoteJid?.endsWith('@g.us'))) return false;
     if (inboxTab === 'all' && c.isArchived) return false;
 
     if (!searchQuery.trim()) return true;
@@ -986,6 +987,14 @@ export default function Dashboard({ user, onLogout }) {
                 Unread ({chats.filter(c => c.unreadCount > 0).length})
               </button>
               <button
+                className={`btn btn-sm rounded-pill text-nowrap py-0 px-2 d-flex align-items-center gap-1 ${inboxTab === 'groups' ? 'btn-primary' : 'btn-outline-secondary border-0'}`}
+                style={{ fontSize: '0.78rem' }}
+                onClick={() => setInboxTab('groups')}
+              >
+                <i className="bi bi-people-fill" style={{ fontSize: '0.7rem' }}></i>
+                <span>Groups ({chats.filter(c => !c.isArchived && (c.isGroup || c.remoteJid?.endsWith('@g.us'))).length})</span>
+              </button>
+              <button
                 className={`btn btn-sm rounded-pill text-nowrap py-0 px-2 d-flex align-items-center gap-1 ${inboxTab === 'pinned' ? 'btn-primary' : 'btn-outline-secondary border-0'}`}
                 style={{ fontSize: '0.78rem' }}
                 onClick={() => setInboxTab('pinned')}
@@ -1088,6 +1097,7 @@ export default function Dashboard({ user, onLogout }) {
             ) : (
               filteredChats.map(chat => {
                 const isSelected = selectedChat?.id === chat.id;
+                const isGroupChat = Boolean(chat.isGroup || chat.remoteJid?.endsWith('@g.us'));
                 return (
                   <div
                     key={chat.id}
@@ -1096,7 +1106,11 @@ export default function Dashboard({ user, onLogout }) {
                   >
                     {/* Avatar */}
                     <div className="wa-avatar">
-                      {(chat.customerName || chat.customerPhone || '?').charAt(0).toUpperCase()}
+                      {isGroupChat ? (
+                        <i className="bi bi-people-fill text-primary" style={{ fontSize: '1.05rem' }}></i>
+                      ) : (
+                        (chat.customerName || chat.customerPhone || '?').charAt(0).toUpperCase()
+                      )}
                     </div>
 
                     {/* Chat Info */}
@@ -1104,7 +1118,14 @@ export default function Dashboard({ user, onLogout }) {
                       <div className="d-flex justify-content-between align-items-baseline">
                         <span className={`text-truncate ${chat.unreadCount ? 'fw-bold' : 'fw-semibold'}`}>
                           {chat.isPinned && <i className="bi bi-pin-angle-fill text-warning me-1" title="Pinned Chat"></i>}
-                          {chat.customerName || formatPhone(chat.customerPhone)}
+                          {isGroupChat ? (
+                            <>
+                              <i className="bi bi-people text-secondary opacity-75 me-1 small"></i>
+                              {chat.customerName || 'WhatsApp Group'}
+                            </>
+                          ) : (
+                            chat.customerName || formatPhone(chat.customerPhone)
+                          )}
                         </span>
                         <span className="text-secondary flex-shrink-0 ms-2" style={{ fontSize: '0.72rem' }}>
                           {formatTime(chat.lastTimestamp)}
@@ -1151,16 +1172,31 @@ export default function Dashboard({ user, onLogout }) {
                 </button>
 
                 <div className="wa-avatar">
-                  {(selectedChat.customerName || selectedChat.customerPhone || '?').charAt(0).toUpperCase()}
+                  {selectedChat.isGroup || selectedChat.remoteJid?.endsWith('@g.us') ? (
+                    <i className="bi bi-people-fill text-primary fs-5"></i>
+                  ) : (
+                    (selectedChat.customerName || selectedChat.customerPhone || '?').charAt(0).toUpperCase()
+                  )}
                 </div>
 
                 <div>
                   <h6 className="mb-0 fw-bold">
-                    {selectedChat.customerName || formatPhone(selectedChat.customerPhone)}
+                    {selectedChat.isGroup || selectedChat.remoteJid?.endsWith('@g.us') ? (
+                      <>
+                        <i className="bi bi-people-fill me-1 text-secondary opacity-75 small"></i>
+                        {selectedChat.customerName || 'WhatsApp Group'}
+                      </>
+                    ) : (
+                      selectedChat.customerName || formatPhone(selectedChat.customerPhone)
+                    )}
                   </h6>
                   <div className="d-flex align-items-center gap-2 mt-1">
                     <span className="text-muted small" style={{ fontSize: '0.78rem' }}>
-                      {formatPhone(selectedChat.customerPhone)}
+                      {selectedChat.isGroup || selectedChat.remoteJid?.endsWith('@g.us') ? (
+                        <span className="badge bg-secondary-subtle text-secondary border px-1" style={{ fontSize: '0.68rem' }}>Group</span>
+                      ) : (
+                        formatPhone(selectedChat.customerPhone)
+                      )}
                     </span>
                     <span className="text-secondary" style={{ fontSize: '0.75rem' }}>•</span>
                     <span className="msquare-badge py-0" style={{ fontSize: '0.75rem' }}>
@@ -1257,6 +1293,12 @@ export default function Dashboard({ user, onLogout }) {
                       <div
                         className={`bubble ${isMe ? 'bubble-out' : 'bubble-in'}`}
                       >
+                        {/* Group Sender Name */}
+                        {!isMe && (selectedChat.isGroup || selectedChat.remoteJid?.endsWith('@g.us')) && (m.senderName || m.customerName) && (
+                          <div className="small fw-bold text-primary mb-1" style={{ fontSize: '0.73rem', letterSpacing: '0.2px' }}>
+                            {m.senderName || m.customerName}
+                          </div>
+                        )}
                         {/* Media Display: IMAGE */}
                         {m.mediaType === 'image' && (
                           <div className="mb-2">
