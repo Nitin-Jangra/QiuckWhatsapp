@@ -247,23 +247,44 @@ async function sendOtp(target, purpose) {
     }
   });
 
-  // Log delivery in dev/production
-  if (process.env.NODE_ENV !== 'production' || process.env.DEBUG_OTP === 'true') {
+  // Dispatch real email if configured
+  let emailSent = false;
+  if (isEmail) {
+    try {
+      const emailService = require('./email');
+      if (emailService.isConfigured()) {
+        const res = await emailService.sendEmailOtp({ to: email, otp, purpose });
+        emailSent = Boolean(res.sent);
+      }
+    } catch (err) {
+      console.error(`[Email Service] Failed to send email to ${email}:`, err.message);
+    }
+  }
+
+  // Log delivery in dev/production or when DEBUG_OTP=true
+  if (process.env.NODE_ENV !== 'production' || process.env.DEBUG_OTP === 'true' || !emailSent) {
     if (isEmail) {
-      console.log(`[Email Service Mock] Sent OTP ${otp} to ${email} for ${purpose}`);
+      console.log(`[Email Service] OTP for ${email} (${purpose}): ${otp}${emailSent ? ' (sent via SMTP)' : ' (logged via DEBUG_OTP / SMTP not configured)'}`);
     } else {
       console.log(`[SMS Gateway Mock] Sent OTP ${otp} to ${phone} for ${purpose}`);
     }
   }
 
+  // Return devOtp when in test/dev, when DEBUG_OTP=true, or when email was not dispatched via SMTP
+  const shouldExposeDevOtp = (process.env.NODE_ENV !== 'production') ||
+                             (process.env.DEBUG_OTP === 'true') ||
+                             (!emailSent);
+
   return {
     success: true,
-    message: isEmail ? `OTP sent to ${maskEmail(email)}` : `OTP sent to ${phone}`,
+    message: isEmail
+      ? (emailSent ? `OTP sent to ${maskEmail(email)}` : `OTP generated for ${maskEmail(email)}`)
+      : `OTP sent to ${phone}`,
     email: email || undefined,
     phoneNumber: phone || undefined,
+    emailSent,
     expiresAt,
-    // devOtp is populated outside production for automated validation
-    ...(process.env.NODE_ENV !== 'production' ? { devOtp: otp } : {})
+    ...(shouldExposeDevOtp ? { devOtp: otp } : {})
   };
 }
 

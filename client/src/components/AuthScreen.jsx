@@ -113,7 +113,13 @@ export default function AuthScreen({ needsSetup, offline, onDone }) {
       if (!json.success) throw new Error(json.error || 'Failed to send verification code');
 
       setOtpSent(true);
-      setNotice(json.message || `Verification code sent to ${regForm.email}`);
+      const code = json.data?.devOtp;
+      if (code) {
+        setRegForm(f => ({ ...f, otp: code }));
+        setNotice(`Verification code is: ${code} (auto-filled below). To receive emails in your inbox, set up SMTP in .env.`);
+      } else {
+        setNotice(json.message || `Verification code sent to ${regForm.email}. Please check your Inbox and Spam folder.`);
+      }
       startCooldown(setOtpCooldown, 60);
     } catch (err) {
       setError(err.message);
@@ -182,7 +188,13 @@ export default function AuthScreen({ needsSetup, offline, onDone }) {
       if (!json.success) throw new Error(json.error || 'Could not send reset code');
 
       setForgotOtpSent(true);
-      setNotice(json.message || 'If this account exists, a reset code has been sent');
+      const code = json.data?.devOtp;
+      if (code) {
+        setForgotForm(f => ({ ...f, otp: code }));
+        setNotice(`Reset code is: ${code} (auto-filled below).`);
+      } else {
+        setNotice(json.message || 'If this account exists, a reset code has been sent.');
+      }
       startCooldown(setForgotCooldown, 60);
     } catch (err) {
       setError(err.message);
@@ -575,7 +587,7 @@ export default function AuthScreen({ needsSetup, offline, onDone }) {
                         />
                         <div className="d-flex justify-content-between align-items-center mt-1">
                           <small className="text-muted" style={{ fontSize: '0.72rem' }}>
-                            Check your inbox and spam/junk folder.
+                            {regForm.otp ? `Code (${regForm.otp}) auto-filled.` : 'Check your inbox and spam/junk folder.'}
                           </small>
                           {otpCooldown === 0 && (
                             <button
