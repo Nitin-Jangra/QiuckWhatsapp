@@ -3,13 +3,16 @@ import PrivacyPolicyModal from './PrivacyPolicyModal';
 import TermsConditionsModal from './TermsConditionsModal';
 
 export default function AuthScreen({ needsSetup, offline, onDone }) {
-  const [tab, setTab] = useState(needsSetup ? 'setup' : 'login'); // 'login' | 'register' | 'forgot' | 'setup'
+  const inviteToken = new URLSearchParams(window.location.search).get('invite');
+  const [tab, setTab] = useState(inviteToken ? 'invite' : needsSetup ? 'setup' : 'login'); // 'login' | 'register' | 'forgot' | 'setup' | 'invite'
+  const [invitePw, setInvitePw] = useState({ password: '', confirm: '' });
 
   // Login state
   const [loginForm, setLoginForm] = useState({ username: '', password: '' });
   // Register state
   const [regForm, setRegForm] = useState({
     fullName: '',
+    email: '',
     phoneNumber: '',
     username: '',
     password: '',
@@ -204,6 +207,29 @@ export default function AuthScreen({ needsSetup, offline, onDone }) {
     }
   };
 
+  // Accept a team invitation: the member sets their own password, then lands in the owner's workspace
+  const handleAcceptInvite = async (e) => {
+    e.preventDefault();
+    setError('');
+    if (invitePw.password !== invitePw.confirm) return setError('Passwords do not match');
+    setBusy(true);
+    try {
+      const res = await fetch('/api/team/invitations/accept', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: inviteToken, password: invitePw.password })
+      });
+      const json = await res.json();
+      if (!json.success) throw new Error(json.error || 'Could not accept invitation');
+      window.history.replaceState(null, '', window.location.pathname); // drop the token from the URL
+      onDone();
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div className="auth-wrap d-flex align-items-center justify-content-center min-vh-100 p-3" style={{ backgroundColor: '#0f172a' }}>
       <div className="card border-0 shadow-lg rounded-4 overflow-hidden" style={{ width: '100%', maxWidth: '440px', backgroundColor: '#ffffff' }}>
@@ -215,7 +241,7 @@ export default function AuthScreen({ needsSetup, offline, onDone }) {
         </div>
 
         {/* Tab Selector (unless in first-run setup mode) */}
-        {tab !== 'setup' && (
+        {tab !== 'setup' && tab !== 'invite' && (
           <div className="d-flex border-bottom bg-light">
             <button
               className={`btn flex-grow-1 rounded-0 py-2 fw-semibold small ${tab === 'login' ? 'btn-white border-bottom border-primary border-2 text-primary' : 'text-secondary'}`}
@@ -237,6 +263,19 @@ export default function AuthScreen({ needsSetup, offline, onDone }) {
           {offline && <div className="alert alert-warning py-2 small mb-3">Cannot reach the backend server. Check your connection.</div>}
           {error && <div className="alert alert-danger py-2 small mb-3">{error}</div>}
           {notice && <div className="alert alert-success py-2 small mb-3">{notice}</div>}
+
+          {tab === 'invite' && (
+            <form onSubmit={handleAcceptInvite}>
+              <h6 className="fw-bold mb-1">Join your team workspace</h6>
+              <p className="text-muted small">Set a password to activate your member account. Your username was chosen by the account owner.</p>
+              <input type="password" className="form-control mb-2" placeholder="New password (8+ chars, letters and numbers)" autoComplete="new-password" required
+                value={invitePw.password} onChange={e => setInvitePw({ ...invitePw, password: e.target.value })} />
+              <input type="password" className="form-control mb-3" placeholder="Confirm password" autoComplete="new-password" required
+                value={invitePw.confirm} onChange={e => setInvitePw({ ...invitePw, confirm: e.target.value })} />
+              <button className="btn btn-msquare-primary w-100" disabled={busy}>{busy ? 'Joining…' : 'Accept invitation'}</button>
+              <button type="button" className="btn btn-link btn-sm w-100 mt-2" onClick={() => setTab('login')}>I already have an account</button>
+            </form>
+          )}
 
           {/* TAB 1: SIGN IN */}
           {tab === 'login' && (
@@ -322,6 +361,12 @@ export default function AuthScreen({ needsSetup, offline, onDone }) {
                   onChange={e => setRegForm({ ...regForm, username: e.target.value.toLowerCase().replace(/[^a-z0-9_.]/g, '') })}
                   required
                 />
+              </div>
+
+              <div className="mb-2">
+                <label className="form-label small fw-semibold text-secondary mb-1">Email (optional)</label>
+                <input type="email" className="form-control form-control-sm" placeholder="you@company.com"
+                  value={regForm.email} onChange={e => setRegForm({ ...regForm, email: e.target.value })} />
               </div>
 
               <div className="mb-2">

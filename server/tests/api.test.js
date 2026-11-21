@@ -8,6 +8,7 @@ process.env.DATA_DIR = fs0.mkdtempSync(nodePath.join(os.tmpdir(), 'wacrm-test-')
 process.env.NODE_ENV = 'test';
 const app = require('../src/app');
 const store = require('../src/store');
+test.before(() => app.ready);
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
@@ -107,10 +108,10 @@ test('Staff only see and use accounts assigned to them', async () => {
   try {
     await withServer(async (base) => {
       const admin = await adminCookie(base);
-      store.saveAccount({ id: 'acc_a', name: 'Sales' });
-      store.saveAccount({ id: 'acc_b', name: 'Support' });
-      store.addMessage({ id: 'm1', accountId: 'acc_a', remoteJid: '911@s.whatsapp.net', text: 'hi A', timestamp: new Date().toISOString() });
-      store.addMessage({ id: 'm2', accountId: 'acc_b', remoteJid: '922@s.whatsapp.net', text: 'hi B', timestamp: new Date().toISOString() });
+      await store.saveAccount({ id: 'acc_a', name: 'Sales' });
+      await store.saveAccount({ id: 'acc_b', name: 'Support' });
+      await store.addMessage({ id: 'm1', accountId: 'acc_a', remoteJid: '911@s.whatsapp.net', text: 'hi A', timestamp: new Date().toISOString() });
+      await store.addMessage({ id: 'm2', accountId: 'acc_b', remoteJid: '922@s.whatsapp.net', text: 'hi B', timestamp: new Date().toISOString() });
 
       const made = await post(base, '/api/users', { username: 'agent1', name: 'Agent One', password: 'agentpass1', role: 'agent', accountIds: ['acc_a'] }, admin);
       assert.strictEqual(made.status, 200);

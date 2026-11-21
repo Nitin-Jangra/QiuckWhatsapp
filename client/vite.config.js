@@ -11,7 +11,8 @@ export default defineConfig({
     proxy: {
       '/api': {
         target: 'http://localhost:5000',
-        changeOrigin: true
+        changeOrigin: true,
+        xfwd: true // forwards X-Forwarded-Host so the backend's cross-site check accepts the dev server
       }
     }
   }

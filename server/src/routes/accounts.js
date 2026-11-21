@@ -2,13 +2,15 @@ const express = require('express');
 const router = express.Router();
 const store = require('../store');
 const connector = require('../whatsapp/connector-service');
-const { canAccess } = require('../auth');
+const { canAccess, allowedAccountIds, can, audit } = require('../auth');
+const noManage = (req) => !can(req.user, 'accounts.manage');
 
 // 1. List all accounts with live session status (strictly tenant-scoped)
-router.get('/', (req, res) => {
+router.get('/', async (req, res) => {
   const isSuperAdmin = req.user?.role === 'admin' && req.query.all === 'true';
-  const allAccounts = store.getAccounts();
-  const accounts = isSuperAdmin ? allAccounts : allAccounts.filter(a => canAccess(req.user, a.id));
+  const allAccounts = await store.getAccounts();
+  const allowed = new Set(isSuperAdmin ? allAccounts.map(a => a.id) : await allowedAccountIds(req.user, allAccounts.map(a => a.id)));
+  const accounts = allAccounts.filter(a => allowed.has(a.id));
   const data = accounts.map(acc => {
     const status = connector.getAccountStatus(acc.id);
     return {
@@ -27,8 +29,8 @@ router.get('/', (req, res) => {
 router.post('/', async (req, res) => {
   try {
     // Staff/Agents cannot create accounts
-    if (req.user?.role === 'agent') {
-      return res.status(403).json({ success: false, error: 'Staff members cannot create WhatsApp accounts' });
+    if (noManage(req)) {
+      return res.status(403).json({ success: false, error: 'You do not have permission to connect WhatsApp accounts' });
     }
 
     const { name } = req.body;
@@ -37,12 +39,13 @@ router.post('/', async (req, res) => {
     }
 
     const id = `acc_${Date.now()}`;
-    const account = store.saveAccount({
+    const account = await store.saveAccount({
       id,
       name: name.trim(),
       status: 'CONNECTING',
       phone: null
-    }, req.user?.id);
+    }, typeof req.user?.id === 'number' ? req.user.workspaceId : null);
+    await audit(req, 'whatsapp.account_created', { accountId: id, name: account.name });
 
     // Start Baileys session asynchronously (skip real socket connection during test suite)
     if (process.env.NODE_ENV !== 'test') {
@@ -62,9 +65,9 @@ router.post('/', async (req, res) => {
 });
 
 // 3. Get single account status
-router.get('/:id/status', (req, res) => {
-  if (!canAccess(req.user, req.params.id)) return res.status(403).json({ success: false, error: 'No access to this account' });
-  const account = store.getAccount(req.params.id);
+router.get('/:id/status', async (req, res) => {
+  if (!await canAccess(req.user, req.params.id)) return res.status(403).json({ success: false, error: 'No access to this account' });
+  const account = await store.getAccount(req.params.id);
   if (!account) {
     return res.status(404).json({ success: false, error: 'Account not found' });
   }
@@ -87,20 +90,21 @@ router.get('/:id/status', (req, res) => {
 // 4. Reconnect / Refresh QR code
 router.post('/:id/connect', async (req, res) => {
   try {
-    if (req.user?.role === 'agent') {
-      return res.status(403).json({ success: false, error: 'Staff members cannot modify account connections' });
+    if (noManage(req)) {
+      return res.status(403).json({ success: false, error: 'You do not have permission to manage WhatsApp connections' });
     }
-    if (!canAccess(req.user, req.params.id)) {
+    if (!await canAccess(req.user, req.params.id)) {
       return res.status(403).json({ success: false, error: 'No access to this account' });
     }
 
-    const account = store.getAccount(req.params.id);
+    const account = await store.getAccount(req.params.id);
     if (!account) {
       return res.status(404).json({ success: false, error: 'Account not found' });
     }
 
     await connector.disconnectAccount(req.params.id, false);
     const status = await connector.initAccount(req.params.id);
+    await audit(req, 'whatsapp.account_connect', { accountId: req.params.id });
     res.json({ success: true, message: 'Connection requested', data: status });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -110,20 +114,21 @@ router.post('/:id/connect', async (req, res) => {
 // 5. Disconnect account (without deleting)
 router.post('/:id/disconnect', async (req, res) => {
   try {
-    if (req.user?.role === 'agent') {
-      return res.status(403).json({ success: false, error: 'Staff members cannot modify account connections' });
+    if (noManage(req)) {
+      return res.status(403).json({ success: false, error: 'You do not have permission to manage WhatsApp connections' });
     }
-    if (!canAccess(req.user, req.params.id)) {
+    if (!await canAccess(req.user, req.params.id)) {
       return res.status(403).json({ success: false, error: 'No access to this account' });
     }
 
-    const account = store.getAccount(req.params.id);
+    const account = await store.getAccount(req.params.id);
     if (!account) {
       return res.status(404).json({ success: false, error: 'Account not found' });
     }
 
     const logout = Boolean(req.body.logout);
     await connector.disconnectAccount(req.params.id, logout);
+    await audit(req, 'whatsapp.account_disconnect', { accountId: req.params.id, logout });
     res.json({ success: true, message: logout ? 'Account logged out' : 'Account disconnected' });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
@@ -133,18 +138,30 @@ router.post('/:id/disconnect', async (req, res) => {
 // 6. Delete account permanently (unlinks and wipes session files)
 router.delete('/:id', async (req, res) => {
   try {
-    if (req.user?.role === 'agent') {
-      return res.status(403).json({ success: false, error: 'Staff members cannot delete accounts' });
+    if (noManage(req)) {
+      return res.status(403).json({ success: false, error: 'You do not have permission to delete WhatsApp accounts' });
     }
-    if (!canAccess(req.user, req.params.id)) {
+    if (!await canAccess(req.user, req.params.id)) {
       return res.status(403).json({ success: false, error: 'No access to this account' });
     }
 
     await connector.deleteAccount(req.params.id);
+    await audit(req, 'whatsapp.account_deleted', { accountId: req.params.id });
     res.json({ success: true, message: 'Account deleted' });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
+});
+
+// 7. Pause / resume all outgoing messages on a number (shared-number protection)
+router.post('/:id/sending', async (req, res) => {
+  if (noManage(req)) return res.status(403).json({ success: false, error: 'You do not have permission to manage WhatsApp accounts' });
+  if (!await canAccess(req.user, req.params.id)) return res.status(403).json({ success: false, error: 'No access to this account' });
+  if (!await store.getAccount(req.params.id)) return res.status(404).json({ success: false, error: 'Account not found' });
+  const paused = Boolean(req.body?.paused);
+  const account = await store.saveAccount({ id: req.params.id, sendingPaused: paused });
+  await audit(req, paused ? 'whatsapp.sending_paused' : 'whatsapp.sending_resumed', { accountId: req.params.id });
+  res.json({ success: true, data: account });
 });
 
 module.exports = router;

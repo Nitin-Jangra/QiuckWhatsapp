@@ -101,6 +101,11 @@ function extractMessageContent(m) {
   return { text, mediaType: null };
 }
 
+// AES-256-GCM key for WhatsApp credential backups: SESSION_SECRET, else the random secret stored
+// in the database at first start (auth.init). Never a hardcoded value.
+const LEGACY_CREDS_KEY = crypto.createHash('sha256').update(process.env.SESSION_SECRET || 'wacrm-secret-key-2026').digest();
+const credsKey = () => crypto.createHash('sha256').update(process.env.SESSION_SECRET || require('../auth').secret()).digest();
+
 class WhatsAppSessionManager extends EventEmitter {
   constructor(options = {}) {
     super();
@@ -248,7 +253,7 @@ class WhatsAppSessionManager extends EventEmitter {
       timestamp: msg.messageTimestamp ? new Date(msg.messageTimestamp * 1000).toISOString() : new Date().toISOString()
     };
 
-    store.addMessage(messageRecord, { history: isHistorySync });
+    await store.addMessage(messageRecord, { history: isHistorySync });
     this.emit('message', messageRecord);
     return messageRecord;
   }
@@ -286,7 +291,7 @@ class WhatsAppSessionManager extends EventEmitter {
     }
 
     const sessionDir = this.getAccountSessionDir(accountId);
-    this.restoreCredsFromDb(accountId, sessionDir);
+    await this.restoreCredsFromDb(accountId, sessionDir);
     const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
 
     session = {
@@ -297,11 +302,12 @@ class WhatsAppSessionManager extends EventEmitter {
       qrDataUrl: null,
       userInfo: null,
       lastError: null,
-      lastConnectedAt: null
+      lastConnectedAt: null,
+      retries: session?.retries || 0
     };
     this.sessions.set(accountId, session);
-    if (store.getAccount(accountId)) {
-      store.saveAccount({ id: accountId, status: 'CONNECTING', lastError: null, qrDataUrl: null });
+    if (await store.getAccount(accountId)) {
+      await store.saveAccount({ id: accountId, status: 'CONNECTING', lastError: null, qrDataUrl: null });
     }
     this.emit('status', { accountId, status: 'CONNECTING' });
 
@@ -343,7 +349,7 @@ class WhatsAppSessionManager extends EventEmitter {
             session.qrDataUrl = null;
           }
 
-          store.saveAccount({
+          await store.saveAccount({
             id: accountId,
             status: 'SCAN_QR',
             qrDataUrl: session.qrDataUrl
@@ -365,7 +371,7 @@ class WhatsAppSessionManager extends EventEmitter {
           );
           if (twin) {
             // Same WhatsApp phone number already linked under another account: unlink this duplicate socket
-            const twinAcc = store.getAccount(twin.accountId);
+            const twinAcc = await store.getAccount(twin.accountId);
             const twinName = twinAcc?.name || twin.accountId;
             session.status = 'DISCONNECTED';
             session.lastError = `This WhatsApp number (${phone}) is already added as "${twinName}". Each connected account must be a distinct WhatsApp phone number.`;
@@ -374,7 +380,7 @@ class WhatsAppSessionManager extends EventEmitter {
             try { sock.end(undefined); } catch (e) {}
             session.sock = null;
             this.clearSessionFolder(sessionDir);
-            store.saveAccount({
+            await store.saveAccount({
               id: accountId,
               status: 'DISCONNECTED',
               lastError: session.lastError,
@@ -385,13 +391,14 @@ class WhatsAppSessionManager extends EventEmitter {
           }
 
           session.status = 'CONNECTED';
+          session.retries = 0;
           session.qr = null;
           session.qrDataUrl = null;
           session.lastConnectedAt = new Date().toISOString();
           session.lastError = null;
           session.userInfo = { jid: userJid, phone, name };
 
-          store.saveAccount({
+          await store.saveAccount({
             id: accountId,
             phone,
             status: 'CONNECTED',
@@ -418,7 +425,7 @@ class WhatsAppSessionManager extends EventEmitter {
               sock.ev.removeAllListeners();
             } catch (e) {}
             session.sock = null;
-            store.saveAccount({
+            await store.saveAccount({
               id: accountId,
               status: 'REAUTH_REQUIRED',
               lastError: session.lastError,
@@ -453,7 +460,7 @@ class WhatsAppSessionManager extends EventEmitter {
 
             session.status = 'DISCONNECTED';
             session.lastError = `${reason}${statusCode ? ` (code ${statusCode})` : ''}`;
-            store.saveAccount({
+            await store.saveAccount({
               id: accountId,
               status: 'DISCONNECTED',
               lastError: session.lastError,
@@ -463,7 +470,9 @@ class WhatsAppSessionManager extends EventEmitter {
 
             const shouldReconnect = statusCode !== DisconnectReason.connectionReplaced;
             if (shouldReconnect) {
-              const delay = statusCode === DisconnectReason.restartRequired ? 300 : 4000;
+              // Exponential backoff (4s, 8s, 16s ... capped at 5 min); resets once connected
+              session.retries = (session.retries || 0) + 1;
+              const delay = statusCode === DisconnectReason.restartRequired ? 300 : Math.min(4000 * 2 ** (session.retries - 1), 300000);
               setTimeout(() => {
                 const cur = this.sessions.get(accountId);
                 if (cur && cur.status === 'DISCONNECTED') {
@@ -484,7 +493,7 @@ class WhatsAppSessionManager extends EventEmitter {
           for (const c of contacts) {
             const name = c.name || c.notify || c.verifiedName;
             if (name && c.id) {
-              store.saveContact(accountId, c.id, name);
+              await store.saveContact(accountId, c.id, name);
               const clean = c.id.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
               if (clean) this.destinationJidCache.set(accountId + '|' + (clean), c.id);
             }
@@ -494,7 +503,7 @@ class WhatsAppSessionManager extends EventEmitter {
         // Register all chats from phone
         if (Array.isArray(chats)) {
           for (const c of chats) {
-            store.saveChat(accountId, c);
+            await store.saveChat(accountId, c);
             const clean = c.id.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
             if (clean) this.destinationJidCache.set(accountId + '|' + (clean), c.id);
           }
@@ -517,32 +526,32 @@ class WhatsAppSessionManager extends EventEmitter {
       });
 
       // 3. Phone-side chat updates (chats created or updated on mobile)
-      sock.ev.on('chats.upsert', (newChats) => {
+      sock.ev.on('chats.upsert', async (newChats) => {
         for (const c of newChats) {
-          store.saveChat(accountId, c);
+          await store.saveChat(accountId, c).catch(() => {});
         }
         this.emit('chats_updated', { accountId });
       });
 
-      sock.ev.on('chats.update', (updatedChats) => {
+      sock.ev.on('chats.update', async (updatedChats) => {
         for (const c of updatedChats) {
-          store.saveChat(accountId, c);
+          await store.saveChat(accountId, c).catch(() => {});
         }
         this.emit('chats_updated', { accountId });
       });
 
       // 4. Contact sync updates
-      sock.ev.on('contacts.upsert', (newContacts) => {
+      sock.ev.on('contacts.upsert', async (newContacts) => {
         for (const c of newContacts) {
           const name = c.name || c.notify || c.verifiedName;
-          if (name && c.id) store.saveContact(accountId, c.id, name);
+          if (name && c.id) await store.saveContact(accountId, c.id, name).catch(() => {});
         }
       });
 
-      sock.ev.on('contacts.update', (updatedContacts) => {
+      sock.ev.on('contacts.update', async (updatedContacts) => {
         for (const c of updatedContacts) {
           const name = c.name || c.notify || c.verifiedName;
-          if (name && c.id) store.saveContact(accountId, c.id, name);
+          if (name && c.id) await store.saveContact(accountId, c.id, name).catch(() => {});
         }
       });
 
@@ -576,7 +585,7 @@ class WhatsAppSessionManager extends EventEmitter {
     }
 
     try {
-      const messages = store.getMessages(accountId, remoteJid);
+      const messages = await store.getMessages(accountId, remoteJid);
       if (messages.length > 0 && session.sock.fetchMessageHistory) {
         const oldest = messages[0];
         const oldestKey = {
@@ -616,7 +625,7 @@ class WhatsAppSessionManager extends EventEmitter {
     return `${cleanDigits}@s.whatsapp.net`;
   }
 
-  async sendMessage(accountId, toPhoneOrJid, text) {
+  async sendMessage(accountId, toPhoneOrJid, text, { sentBy = null } = {}) {
     if (!accountId) throw new Error('accountId is required');
     if (!toPhoneOrJid) throw new Error('to destination is required');
     if (!text || !text.trim()) throw new Error('text message cannot be empty');
@@ -649,12 +658,13 @@ class WhatsAppSessionManager extends EventEmitter {
       timestamp: new Date().toISOString()
     };
 
-    store.addMessage(record);
+    if (sentBy) record.sentBy = sentBy; // internal attribution only; never sent to WhatsApp
+    await store.addMessage(record);
     this.emit('message', record);
     return record;
   }
 
-  async sendMedia(accountId, toPhoneOrJid, { mediaBuffer, mediaType, mimetype, fileName, caption }) {
+  async sendMedia(accountId, toPhoneOrJid, { mediaBuffer, mediaType, mimetype, fileName, caption, sentBy = null }) {
     if (!accountId) throw new Error('accountId is required');
     if (!toPhoneOrJid) throw new Error('to destination is required');
     if (!mediaBuffer || !Buffer.isBuffer(mediaBuffer)) {
@@ -718,7 +728,8 @@ class WhatsAppSessionManager extends EventEmitter {
       timestamp: new Date().toISOString()
     };
 
-    store.addMessage(record);
+    if (sentBy) record.sentBy = sentBy; // internal attribution only; never sent to WhatsApp
+    await store.addMessage(record);
     this.emit('message', record);
     return record;
   }
@@ -747,7 +758,7 @@ class WhatsAppSessionManager extends EventEmitter {
 
   async deleteAccount(accountId) {
     await this.disconnectAccount(accountId, true);
-    store.deleteAccount(accountId);
+    await store.deleteAccount(accountId);
     this.emit('status', { accountId, status: 'DELETED' });
     return { success: true };
   }
@@ -761,12 +772,12 @@ class WhatsAppSessionManager extends EventEmitter {
   }
 
   // Encrypted credential backup to database (AES-256-GCM)
-  backupCredsToDb(accountId, sessionDir) {
+  async backupCredsToDb(accountId, sessionDir) {
     try {
       const credsFile = path.join(sessionDir, 'creds.json');
       if (!fs.existsSync(credsFile)) return;
       const raw = fs.readFileSync(credsFile, 'utf8');
-      const key = crypto.createHash('sha256').update(process.env.SESSION_SECRET || 'wacrm-secret-key-2026').digest();
+      const key = credsKey();
       const iv = crypto.randomBytes(12);
       const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
       let encrypted = cipher.update(raw, 'utf8', 'hex');
@@ -774,8 +785,8 @@ class WhatsAppSessionManager extends EventEmitter {
       const authTag = cipher.getAuthTag().toString('hex');
 
       const db = require('../db');
-      const acc = store.getAccount(accountId);
-      db.prepare(`
+      const acc = await store.getAccount(accountId);
+      await db.run(`
         INSERT INTO whatsapp_sessions (account_id, user_id, encrypted_creds, iv, updated_at)
         VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(account_id) DO UPDATE SET
@@ -783,30 +794,36 @@ class WhatsAppSessionManager extends EventEmitter {
           encrypted_creds = excluded.encrypted_creds,
           iv = excluded.iv,
           updated_at = excluded.updated_at
-      `).run(accountId, acc?.userId || null, `${encrypted}:${authTag}`, iv.toString('hex'), new Date().toISOString());
+      `, accountId, acc?.userId || null, `${encrypted}:${authTag}`, iv.toString('hex'), new Date().toISOString());
     } catch (err) {
       // Non-fatal during high frequency auth writes
     }
   }
 
   // Restore encrypted credentials from database if missing locally
-  restoreCredsFromDb(accountId, sessionDir) {
+  async restoreCredsFromDb(accountId, sessionDir) {
     try {
       const credsFile = path.join(sessionDir, 'creds.json');
       if (fs.existsSync(credsFile)) return true;
 
       const db = require('../db');
-      const row = db.prepare('SELECT encrypted_creds, iv FROM whatsapp_sessions WHERE account_id = ?').get(accountId);
+      const row = await db.get('SELECT encrypted_creds, iv FROM whatsapp_sessions WHERE account_id = ?', accountId);
       if (!row || !row.encrypted_creds || !row.iv) return false;
 
       const [encrypted, authTag] = row.encrypted_creds.split(':');
       if (!encrypted || !authTag) return false;
 
-      const key = crypto.createHash('sha256').update(process.env.SESSION_SECRET || 'wacrm-secret-key-2026').digest();
-      const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(row.iv, 'hex'));
-      decipher.setAuthTag(Buffer.from(authTag, 'hex'));
-      let decrypted = decipher.update(encrypted, 'hex', 'utf8');
-      decrypted += decipher.final('utf8');
+      // Current key first; legacy key only so backups written by older versions still restore
+      let decrypted = null;
+      for (const key of [credsKey(), LEGACY_CREDS_KEY]) {
+        try {
+          const decipher = crypto.createDecipheriv('aes-256-gcm', key, Buffer.from(row.iv, 'hex'));
+          decipher.setAuthTag(Buffer.from(authTag, 'hex'));
+          decrypted = decipher.update(encrypted, 'hex', 'utf8') + decipher.final('utf8');
+          break;
+        } catch (e) {}
+      }
+      if (!decrypted) return false;
 
       fs.mkdirSync(sessionDir, { recursive: true });
       fs.writeFileSync(credsFile, decrypted, 'utf8');
@@ -835,11 +852,11 @@ class WhatsAppSessionManager extends EventEmitter {
   }
 
   async autoRestore() {
-    const accounts = store.getAccounts();
+    const accounts = await store.getAccounts();
     for (const acc of accounts) {
       const dir = path.join(this.sessionBasePath, acc.id);
       const credsFile = path.join(dir, 'creds.json');
-      if (fs.existsSync(credsFile)) {
+      if (fs.existsSync(credsFile) || (await this.restoreCredsFromDb(acc.id, dir))) {
         console.log(`[WaCRM] Restoring authenticated WhatsApp session for: ${acc.name} (${acc.id})`);
         this.initAccount(acc.id).catch(err => {
           console.warn(`[WaCRM] Session auto-restore failed for ${acc.id}:`, err.message);

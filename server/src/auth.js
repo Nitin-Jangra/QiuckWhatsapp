@@ -1,6 +1,12 @@
 // Login, signed session cookies, OTP verification and access rules. Uses only Node's built-in crypto.
+// All database-touching helpers are async (see db.js).
 const crypto = require('crypto');
+const { EventEmitter } = require('events');
 const db = require('./db');
+
+// Emits 'revoked' (userId) so live SSE streams on this instance close immediately.
+// Other instances detect revocation through the shared user_sessions table.
+const events = new EventEmitter();
 
 const COOKIE = 'wa_session';
 const MAX_AGE_SEC = 7 * 24 * 3600;
@@ -8,16 +14,17 @@ const OTP_COOLDOWN_MS = 60 * 1000;      // 60 seconds resend cooldown
 const OTP_EXPIRY_MS = 10 * 60 * 1000;    // 10 minutes expiry
 const OTP_MAX_ATTEMPTS = 3;
 
-// Signing key: env var, or generated once and kept in the database
-function getSecret() {
+// Signing key: env var, or generated once and kept in the database (set by init())
+let SECRET = null;
+async function loadSecret() {
   if (process.env.SESSION_SECRET) return process.env.SESSION_SECRET;
-  const row = db.prepare("SELECT value FROM meta WHERE key = 'session_secret'").get();
+  const row = await db.get("SELECT value FROM meta WHERE key = 'session_secret'");
   if (row) return row.value;
   const secret = crypto.randomBytes(32).toString('hex');
-  db.prepare("INSERT INTO meta (key, value) VALUES ('session_secret', ?)").run(secret);
-  return secret;
+  // Another instance may have raced us: keep whichever was stored first
+  await db.run("INSERT INTO meta (key, value) VALUES ('session_secret', ?) ON CONFLICT DO NOTHING", secret);
+  return (await db.get("SELECT value FROM meta WHERE key = 'session_secret'")).value;
 }
-const SECRET = getSecret();
 
 // ---- Normalization & Validation ----
 function normalizePhone(phone) {
@@ -42,16 +49,36 @@ function validatePassword(password) {
   if (!password || typeof password !== 'string' || password.length < 8) {
     return { valid: false, error: 'Password must be at least 8 characters long' };
   }
+  if (password.length > 128) return { valid: false, error: 'Password must be at most 128 characters' };
+  if (!/[a-zA-Z]/.test(password) || !/[0-9]/.test(password)) {
+    return { valid: false, error: 'Password must contain at least one letter and one number' };
+  }
   return { valid: true };
 }
 
 // ---- Cryptographic Helpers ----
+// Argon2id (native in Node 24.7+). Older Node falls back to scrypt; both formats verify.
+const ARGON = { parallelism: 1, tagLength: 32, memory: 19456, passes: 2 };
+const hasArgon = typeof crypto.argon2Sync === 'function';
+const argon = (password, nonce) => crypto.argon2Sync('argon2id', { ...ARGON, message: password, nonce });
+
 const hashPassword = (password) => {
+  if (hasArgon) {
+    const nonce = crypto.randomBytes(16);
+    return ['argon2id', nonce.toString('hex'), argon(password, nonce).toString('hex')].join('$');
+  }
   const salt = crypto.randomBytes(16).toString('hex');
   return `${salt}:${crypto.scryptSync(password, salt, 64).toString('hex')}`;
 };
 
 const verifyPassword = (password, stored) => {
+  if (String(stored).startsWith('argon2id$')) {
+    if (!hasArgon) return false;
+    const [, nonce, hash] = String(stored).split('$');
+    const real = Buffer.from(hash, 'hex');
+    const test = argon(password, Buffer.from(nonce, 'hex'));
+    return real.length === test.length && crypto.timingSafeEqual(real, test);
+  }
   const [salt, hash] = String(stored).split(':');
   if (!salt || !hash) return false;
   const test = crypto.scryptSync(password, salt, 64);
@@ -61,44 +88,41 @@ const verifyPassword = (password, stored) => {
 
 const sign = (payload) => crypto.createHmac('sha256', SECRET).update(payload).digest('base64url');
 
-function createSession(userId, req) {
+async function createSession(userId, req) {
   const sessionId = crypto.randomUUID();
   const expiresAt = new Date(Date.now() + MAX_AGE_SEC * 1000).toISOString();
   const ipAddress = req?.ip || req?.socket?.remoteAddress || '';
-  const userAgent = req?.headers?.['user-agent'] || '';
+  const userAgent = String(req?.headers?.['user-agent'] || '').slice(0, 300);
 
-  try {
-    db.prepare(`
-      INSERT INTO user_sessions (id, user_id, ip_address, user_agent, expires_at, created_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(sessionId, userId, ipAddress, userAgent, expiresAt, new Date().toISOString());
-  } catch (err) {
-    // If table missing in tests, fallback to purely signed token
-  }
+  await db.run(
+    'INSERT INTO user_sessions (id, user_id, ip_address, user_agent, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+    sessionId, userId, ipAddress, userAgent, expiresAt, new Date().toISOString()
+  );
 
   const payload = Buffer.from(JSON.stringify({ sid: sessionId, uid: userId, exp: Date.now() + MAX_AGE_SEC * 1000 })).toString('base64url');
   return `${payload}.${sign(payload)}`;
 }
 
-function readToken(token) {
+async function readSession(token) {
   const [payload, sig] = String(token || '').split('.');
   if (!payload || !sig) return null;
   const expected = sign(payload);
   if (sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+  let data;
   try {
-    const data = JSON.parse(Buffer.from(payload, 'base64url').toString());
-    if (data.exp <= Date.now()) return null;
-
-    // If session ID is present, verify session is still active in database
-    if (data.sid) {
-      const active = db.prepare('SELECT id FROM user_sessions WHERE id = ? AND expires_at > ?').get(data.sid, new Date().toISOString());
-      if (!active) return null;
-    }
-    return data.uid;
+    data = JSON.parse(Buffer.from(payload, 'base64url').toString());
   } catch (e) {
     return null;
   }
+  if (!data || data.exp <= Date.now()) return null;
+  // Sessions must still exist in the database (revocation works across instances)
+  if (data.sid) {
+    const active = await db.get('SELECT id FROM user_sessions WHERE id = ? AND expires_at > ?', data.sid, new Date().toISOString());
+    if (!active) return null;
+  }
+  return { uid: data.uid, sid: data.sid || null };
 }
+const readToken = async (token) => (await readSession(token))?.uid || null;
 
 function parseCookies(header = '') {
   return Object.fromEntries(
@@ -106,32 +130,29 @@ function parseCookies(header = '') {
   );
 }
 
-function setSessionCookie(req, res, userId) {
+async function setSessionCookie(req, res, userId) {
   const secure = req.secure || req.headers['x-forwarded-proto'] === 'https';
-  const token = createSession(userId, req);
+  const token = await createSession(userId, req);
   res.setHeader(
     'Set-Cookie',
     `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${MAX_AGE_SEC}${secure ? '; Secure' : ''}`
   );
 }
 
-function clearSessionCookie(req, res) {
-  const cookies = parseCookies(req?.headers?.cookie || '');
-  const token = cookies[COOKIE];
+async function clearSessionCookie(req, res) {
+  const token = parseCookies(req?.headers?.cookie || '')[COOKIE];
   if (token) {
-    const [payload] = String(token).split('.');
     try {
-      const data = JSON.parse(Buffer.from(payload, 'base64url').toString());
-      if (data.sid) {
-        db.prepare('DELETE FROM user_sessions WHERE id = ?').run(data.sid);
-      }
+      const data = JSON.parse(Buffer.from(String(token).split('.')[0], 'base64url').toString());
+      if (data.sid) await db.run('DELETE FROM user_sessions WHERE id = ?', data.sid);
     } catch (e) {}
   }
   res.setHeader('Set-Cookie', `${COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
 }
 
-function revokeAllUserSessions(userId) {
-  db.prepare('DELETE FROM user_sessions WHERE user_id = ?').run(userId);
+async function revokeAllUserSessions(userId) {
+  await db.run('DELETE FROM user_sessions WHERE user_id = ?', userId);
+  events.emit('revoked', userId);
 }
 
 // ---- OTP Management ----
@@ -139,17 +160,15 @@ function hashOtp(otp) {
   return crypto.createHmac('sha256', SECRET).update(String(otp)).digest('hex');
 }
 
-function sendOtp(phoneNumber, purpose) {
+async function sendOtp(phoneNumber, purpose) {
   const phone = normalizePhone(phoneNumber);
   if (!phone || phone.length < 10) throw new Error('A valid mobile phone number is required');
 
   // Cooldown check: Has an active OTP been issued in the last 60 seconds?
-  const recent = db.prepare(`
-    SELECT created_at FROM otp_verifications
-    WHERE phone_number = ? AND purpose = ?
-    ORDER BY created_at DESC LIMIT 1
-  `).get(phone, purpose);
-
+  const recent = await db.get(
+    'SELECT created_at FROM otp_verifications WHERE phone_number = ? AND purpose = ? ORDER BY created_at DESC LIMIT 1',
+    phone, purpose
+  );
   if (recent) {
     const elapsed = Date.now() - new Date(recent.created_at).getTime();
     if (elapsed < OTP_COOLDOWN_MS) {
@@ -163,18 +182,18 @@ function sendOtp(phoneNumber, purpose) {
 
   // Generate cryptographically secure 6-digit numeric code
   const otp = crypto.randomInt(100000, 1000000).toString();
-  const otpHash = hashOtp(otp);
-  const id = crypto.randomUUID();
   const now = new Date();
   const expiresAt = new Date(now.getTime() + OTP_EXPIRY_MS).toISOString();
 
-  // Invalidate any existing unused OTPs for this phone/purpose
-  db.prepare('DELETE FROM otp_verifications WHERE phone_number = ? AND purpose = ?').run(phone, purpose);
-
-  db.prepare(`
-    INSERT INTO otp_verifications (id, phone_number, otp_hash, purpose, attempts, max_attempts, expires_at, created_at)
-    VALUES (?, ?, ?, ?, 0, ?, ?, ?)
-  `).run(id, phone, otpHash, purpose, OTP_MAX_ATTEMPTS, expiresAt, now.toISOString());
+  await db.tx(async () => {
+    // Invalidate any existing unused OTPs for this phone/purpose
+    await db.run('DELETE FROM otp_verifications WHERE phone_number = ? AND purpose = ?', phone, purpose);
+    await db.run(
+      `INSERT INTO otp_verifications (id, phone_number, otp_hash, purpose, attempts, max_attempts, expires_at, created_at)
+       VALUES (?, ?, ?, ?, 0, ?, ?, ?)`,
+      crypto.randomUUID(), phone, hashOtp(otp), purpose, OTP_MAX_ATTEMPTS, expiresAt, now.toISOString()
+    );
+  });
 
   // Log SMS delivery in dev/production
   if (process.env.NODE_ENV !== 'production' || process.env.DEBUG_OTP === 'true') {
@@ -186,36 +205,31 @@ function sendOtp(phoneNumber, purpose) {
     message: `OTP sent to ${phone}`,
     phoneNumber: phone,
     expiresAt,
-    // devOtp is populated in test/development environment for automated validation
-    ...(process.env.NODE_ENV === 'test' || process.env.NODE_ENV !== 'production' ? { devOtp: otp } : {})
+    // devOtp is populated outside production for automated validation
+    ...(process.env.NODE_ENV !== 'production' ? { devOtp: otp } : {})
   };
 }
 
-function verifyOtp(phoneNumber, purpose, candidateOtp) {
+async function verifyOtp(phoneNumber, purpose, candidateOtp) {
   const phone = normalizePhone(phoneNumber);
   if (!phone || !candidateOtp) throw new Error('Phone number and OTP code are required');
 
-  const record = db.prepare(`
-    SELECT * FROM otp_verifications
-    WHERE phone_number = ? AND purpose = ?
-    ORDER BY created_at DESC LIMIT 1
-  `).get(phone, purpose);
-
-  if (!record) {
-    throw new Error('No active OTP found. Please request a new code.');
-  }
+  const record = await db.get(
+    'SELECT * FROM otp_verifications WHERE phone_number = ? AND purpose = ? ORDER BY created_at DESC LIMIT 1',
+    phone, purpose
+  );
+  if (!record) throw new Error('No active OTP found. Please request a new code.');
 
   if (new Date(record.expires_at).getTime() < Date.now()) {
-    db.prepare('DELETE FROM otp_verifications WHERE id = ?').run(record.id);
+    await db.run('DELETE FROM otp_verifications WHERE id = ?', record.id);
     throw new Error('OTP has expired. Please request a new code.');
   }
-
   if (record.attempts >= record.max_attempts) {
-    db.prepare('DELETE FROM otp_verifications WHERE id = ?').run(record.id);
+    await db.run('DELETE FROM otp_verifications WHERE id = ?', record.id);
     throw new Error('Maximum verification attempts exceeded. Please request a new OTP.');
   }
 
-  const candidateHash = hashOtp(candidateOtp.trim());
+  const candidateHash = hashOtp(String(candidateOtp).trim());
   const expectedHash = record.otp_hash;
   const isMatch = candidateHash.length === expectedHash.length &&
                   crypto.timingSafeEqual(Buffer.from(candidateHash), Buffer.from(expectedHash));
@@ -223,95 +237,154 @@ function verifyOtp(phoneNumber, purpose, candidateOtp) {
   if (!isMatch) {
     const nextAttempts = record.attempts + 1;
     const remaining = record.max_attempts - nextAttempts;
-    db.prepare('UPDATE otp_verifications SET attempts = ? WHERE id = ?').run(nextAttempts, record.id);
+    await db.run('UPDATE otp_verifications SET attempts = ? WHERE id = ?', nextAttempts, record.id);
     if (remaining <= 0) {
-      db.prepare('DELETE FROM otp_verifications WHERE id = ?').run(record.id);
+      await db.run('DELETE FROM otp_verifications WHERE id = ?', record.id);
       throw new Error('Invalid OTP. Maximum attempts exceeded. Request a new OTP.');
     }
     throw new Error(`Invalid OTP. ${remaining} attempt${remaining === 1 ? '' : 's'} remaining.`);
   }
 
-  // Successfully verified: remove the OTP so it cannot be re-used
-  db.prepare('DELETE FROM otp_verifications WHERE id = ?').run(record.id);
+  // Successfully verified: delete atomically so a parallel replay cannot also succeed
+  const used = await db.run('DELETE FROM otp_verifications WHERE id = ?', record.id);
+  if (!used.changes) throw new Error('No active OTP found. Please request a new code.');
   return true;
 }
 
-// ---- Users ----
-const publicUser = (u) => u && {
-  id: u.id,
-  username: u.username,
-  name: u.name || u.full_name,
-  fullName: u.full_name || u.name,
-  phoneNumber: u.phone_number || null,
-  phoneVerified: Boolean(u.phone_verified_at),
-  role: u.role,
-  status: u.status || (u.active ? 'active' : 'disabled'),
-  active: Boolean(u.active),
-  createdAt: u.created_at,
-  accountIds: db.prepare('SELECT account_id FROM user_accounts WHERE user_id = ?').all(u.id).map(r => r.account_id)
+// ---- Permissions (default deny) ----
+// Roles: 'admin' = platform SuperAdmin, 'user' = workspace owner, 'manager' = workspace administrator, 'agent' = member.
+const PERMISSIONS = [
+  'accounts.manage',   // connect / disconnect / delete WhatsApp numbers, pause sending
+  'chats.view',        // view conversations and message history
+  'chats.send',        // send messages and media
+  'chats.organize',    // pin / archive / mark read
+  'media.view',        // open / download attachments
+  'team.view',         // see members and their activity
+  'team.manage',       // add / edit / activate / deactivate / remove members
+  'audit.view'         // workspace activity log
+];
+const ROLE_DEFAULTS = {
+  manager: ['chats.view', 'chats.send', 'chats.organize', 'media.view', 'team.view', 'team.manage', 'audit.view'],
+  agent: ['chats.view', 'chats.send', 'chats.organize', 'media.view']
 };
+const sanitizePermissions = (list) => [...new Set((Array.isArray(list) ? list : []).filter(p => PERMISSIONS.includes(p)))];
+const isOwnerRow = (u) => u.role === 'user' && !u.parent_id;
+function effectivePermissions(u) {
+  if (u.role === 'admin' || isOwnerRow(u)) return [...PERMISSIONS];
+  if (u.permissions) {
+    try { return sanitizePermissions(JSON.parse(u.permissions)); } catch (e) { return []; }
+  }
+  return [...(ROLE_DEFAULTS[u.role] || [])];
+}
 
-const getUserById = (id) => db.prepare('SELECT * FROM users WHERE id = ?').get(id) || null;
-const getUserByUsername = (username) => db.prepare('SELECT * FROM users WHERE username = ? COLLATE NOCASE').get(String(username || '').trim()) || null;
-const getUserByPhone = (phone) => db.prepare('SELECT * FROM users WHERE phone_number = ?').get(normalizePhone(phone)) || null;
-const countUsers = () => db.prepare('SELECT COUNT(*) AS n FROM users').get().n;
+// ---- Users ----
+async function publicUser(u) {
+  if (!u) return u;
+  const grants = await db.all('SELECT account_id FROM user_accounts WHERE user_id = ?', u.id);
+  return {
+    id: u.id,
+    username: u.username,
+    email: u.email || null,
+    parentId: u.parent_id || null,
+    workspaceId: u.parent_id || u.id,
+    isOwner: isOwnerRow(u),
+    permissions: effectivePermissions(u),
+    lastLoginAt: u.last_login_at || null,
+    lastActiveAt: u.last_active_at || null,
+    name: u.name || u.full_name,
+    fullName: u.full_name || u.name,
+    phoneNumber: u.phone_number || null,
+    phoneVerified: Boolean(u.phone_verified_at),
+    role: u.role,
+    status: u.status || (u.active ? 'active' : 'disabled'),
+    active: Boolean(u.active),
+    createdAt: u.created_at,
+    accountIds: grants.map(r => r.account_id)
+  };
+}
 
-function setUserAccounts(userId, accountIds = []) {
-  db.tx(() => {
-    db.prepare('DELETE FROM user_accounts WHERE user_id = ?').run(userId);
+const getUserById = async (id) => (await db.get('SELECT * FROM users WHERE id = ?', id)) || null;
+const getUserByUsername = async (username) =>
+  (await db.get('SELECT * FROM users WHERE LOWER(username) = LOWER(?)', String(username || '').trim())) || null;
+const getUserByPhone = async (phone) => (await db.get('SELECT * FROM users WHERE phone_number = ?', normalizePhone(phone))) || null;
+const countUsers = async () => (await db.get('SELECT COUNT(*) AS n FROM users')).n;
+
+async function setUserAccounts(userId, accountIds = []) {
+  await db.tx(async () => {
+    await db.run('DELETE FROM user_accounts WHERE user_id = ?', userId);
     for (const id of new Set(accountIds)) {
-      db.prepare('INSERT INTO user_accounts (user_id, account_id) VALUES (?, ?)').run(userId, String(id));
+      await db.run('INSERT INTO user_accounts (user_id, account_id) VALUES (?, ?)', userId, String(id));
     }
   });
 }
 
-// Seed default SuperAdmin if no admin exists (in production and development)
-function ensureSuperAdmin() {
+// Seed default SuperAdmin if no admin exists
+async function ensureSuperAdmin() {
   if (process.env.NODE_ENV === 'test') return;
   try {
-    const adminExists = db.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin'").get().n > 0;
-    if (!adminExists) {
-      const defaultPassword = process.env.ADMIN_PASSWORD || 'Admin@WaCRM2026!';
-      const defaultUsername = process.env.ADMIN_USERNAME || 'admin';
-      const now = new Date().toISOString();
-      db.prepare(`
-        INSERT INTO users (username, name, full_name, phone_number, phone_verified_at, password_hash, role, status, active, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, 'admin', 'active', 1, ?, ?)
-      `).run(
-        defaultUsername,
-        'Super Administrator',
-        'Super Administrator',
-        '+919999999999',
-        now,
-        hashPassword(defaultPassword),
-        now,
-        now
-      );
-      console.log(`[WaCRM] Seeded default SuperAdmin: username="${defaultUsername}", password="${defaultPassword}"`);
-    }
+    const adminExists = (await db.get("SELECT COUNT(*) AS n FROM users WHERE role = 'admin'")).n > 0;
+    if (adminExists) return;
+    const defaultPassword = process.env.ADMIN_PASSWORD || 'Admin@WaCRM2026!';
+    const defaultUsername = process.env.ADMIN_USERNAME || 'admin';
+    const now = new Date().toISOString();
+    await db.run(
+      `INSERT INTO users (username, name, full_name, phone_number, phone_verified_at, password_hash, role, status, active, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'admin', 'active', 1, ?, ?)`,
+      defaultUsername, 'Super Administrator', 'Super Administrator', '+919999999999', now, hashPassword(defaultPassword), now, now
+    );
+    // Never log the password itself
+    console.log(`[WaCRM] Seeded SuperAdmin "${defaultUsername}" (password from ADMIN_PASSWORD${process.env.ADMIN_PASSWORD ? '' : ', default: CHANGE IT NOW'})`);
   } catch (err) {
     // Ignore during concurrent startups
   }
 }
-ensureSuperAdmin();
+
+// Called once at startup, after db.ready
+async function init() {
+  SECRET = await loadSecret();
+  await ensureSuperAdmin();
+}
 
 // ---- Middleware ----
 function isAuthRequired() {
   return process.env.AUTH_REQUIRED === 'true';
 }
 
-function attachUser(req, res, next) {
-  const uid = readToken(parseCookies(req.headers.cookie)[COOKIE]);
-  const user = uid ? getUserById(uid) : null;
-  if (user && user.active && user.status !== 'suspended') {
-    req.user = publicUser(user);
-  } else if (!isAuthRequired()) {
-    // Open single-user bypass mode
-    req.user = { id: 'admin', username: 'admin', name: 'Admin', role: 'admin', active: true, accountIds: [] };
-  } else {
-    req.user = null;
+// A user may act only while they and (for members) their workspace owner are active
+const statusOk = (u) => Boolean(u && u.active && (!u.status || u.status === 'active'));
+async function isUserUsable(u) {
+  if (!statusOk(u)) return false;
+  return !u.parent_id || statusOk(await getUserById(u.parent_id));
+}
+
+// Resolve a session token to a fully re-checked public user (used by HTTP and SSE)
+async function userFromToken(token) {
+  const s = await readSession(token);
+  const u = s ? await getUserById(s.uid) : null;
+  return (await isUserUsable(u)) ? { user: await publicUser(u), sid: s.sid } : null;
+}
+
+async function attachUser(req, res, next) {
+  try {
+    const resolved = await userFromToken(parseCookies(req.headers.cookie)[COOKIE]);
+    if (resolved) {
+      req.user = resolved.user;
+      req.sessionId = resolved.sid;
+      // Track last activity, at most once per minute per user
+      const last = resolved.user.lastActiveAt ? Date.parse(resolved.user.lastActiveAt) : 0;
+      if (Date.now() - last > 60000) {
+        await db.run('UPDATE users SET last_active_at = ? WHERE id = ?', new Date().toISOString(), resolved.user.id);
+      }
+    } else if (!isAuthRequired()) {
+      // Open single-user bypass mode
+      req.user = { id: 'admin', username: 'admin', name: 'Admin', role: 'admin', active: true, accountIds: [] };
+    } else {
+      req.user = null;
+    }
+    next();
+  } catch (err) {
+    next(err);
   }
-  next();
 }
 
 const requireAuth = (req, res, next) => {
@@ -324,22 +397,62 @@ const requireAdmin = (req, res, next) => {
   return req.user?.role === 'admin' ? next() : res.status(403).json({ success: false, error: 'Admin access required' });
 };
 
-const canAccess = (user, accountId) => {
+// Permission check. Owners and SuperAdmins hold every permission.
+const can = (user, perm) => {
+  if (!isAuthRequired()) return true;
+  return Boolean(user && (user.role === 'admin' || user.isOwner || user.permissions?.includes(perm)));
+};
+const requirePerm = (perm) => (req, res, next) =>
+  can(req.user, perm) ? next() : res.status(403).json({ success: false, error: 'You do not have permission for this action' });
+
+// Pure access rule given the account's owner (null when unknown/legacy)
+function canAccessOwned(user, accountId, ownerId) {
   if (!isAuthRequired()) return true;
   if (!user) return false;
   if (user.role === 'admin') return true;
-  const store = require('./store');
-  const acc = store.getAccount(accountId);
-  if (acc && acc.userId && acc.userId === user.id) return true;
+  if (ownerId) {
+    if (ownerId === user.workspaceId && user.isOwner) return true;
+    // Team members are confined to their own workspace even if a stale grant exists
+    if (user.parentId && ownerId !== user.workspaceId) return false;
+  }
+  // Members (and legacy SuperAdmin-assigned agents) need an explicit per-number grant
   return Boolean(user?.accountIds?.includes(accountId));
-};
+}
 
-const allowedAccountIds = (user, allIds) => {
+// WhatsApp account access: must belong to the caller's workspace; members also need an explicit grant
+async function canAccess(user, accountId) {
+  if (!isAuthRequired()) return true;
+  if (!user) return false;
+  if (user.role === 'admin') return true;
+  const row = await db.get('SELECT user_id FROM accounts WHERE id = ?', accountId);
+  return canAccessOwned(user, accountId, row?.user_id || null);
+}
+
+// Filters account ids in one query instead of one lookup per id
+async function allowedAccountIds(user, allIds) {
   if (!isAuthRequired()) return allIds;
   if (!user) return [];
   if (user.role === 'admin') return allIds;
-  return allIds.filter(id => canAccess(user, id));
-};
+  const owners = new Map((await db.all('SELECT id, user_id FROM accounts')).map(r => [r.id, r.user_id]));
+  return allIds.filter(id => canAccessOwned(user, id, owners.get(id) || null));
+}
+
+// Audit trail. Never pass passwords, OTPs or tokens in details.
+async function audit(req, action, details = {}, { userId, accountId } = {}) {
+  try {
+    const actor = req?.user && typeof req.user.id === 'number' ? req.user : null;
+    await db.run(
+      'INSERT INTO audit_logs (id, user_id, account_id, action, ip_address, details, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      crypto.randomUUID(),
+      userId ?? actor?.id ?? null,
+      accountId ?? actor?.workspaceId ?? null,
+      action,
+      req?.ip || req?.socket?.remoteAddress || '',
+      JSON.stringify(details),
+      new Date().toISOString()
+    );
+  } catch (e) {}
+}
 
 // Slow down password guessing: 10 failures per IP per 10 minutes
 const failures = new Map();
@@ -356,11 +469,13 @@ function loginThrottle(req) {
 }
 
 module.exports = {
+  init,
+  secret: () => SECRET,
   hashPassword, verifyPassword, setSessionCookie, clearSessionCookie, revokeAllUserSessions,
   publicUser, getUserById, getUserByUsername, getUserByPhone, countUsers,
-  setUserAccounts, attachUser, requireAuth, requireAdmin, canAccess, allowedAccountIds,
-  loginThrottle, readToken, parseCookies, COOKIE,
+  setUserAccounts, attachUser, requireAuth, requireAdmin, canAccess, canAccessOwned, allowedAccountIds,
+  loginThrottle, readToken, readSession, userFromToken, isUserUsable, parseCookies, COOKIE,
+  can, requirePerm, audit, events, PERMISSIONS, ROLE_DEFAULTS, sanitizePermissions, effectivePermissions, isAuthRequired,
   normalizePhone, validateUsername, validatePassword,
   sendOtp, verifyOtp, hashOtp
 };
-

@@ -9,6 +9,8 @@ const path = require('path');
 const fs = require('fs');
 const WhatsAppSessionManager = require('../src/whatsapp/session-manager');
 const store = require('../src/store');
+const db = require('../src/db');
+test.before(() => db.ready);
 
 test('WhatsAppSessionManager - Multi-account session directory isolation', (t) => {
   const tempSessionDir = path.join(__dirname, 'temp_sessions');
@@ -62,13 +64,13 @@ test('WhatsAppSessionManager - Account status reporting when disconnected', (t) 
   }
 });
 
-test('Store - Multi-account chat filtering and message storage', (t) => {
+test('Store - Multi-account chat filtering and message storage', async (t) => {
   // Save two accounts
-  store.saveAccount({ id: 'acc_sales', name: 'Sales Account' });
-  store.saveAccount({ id: 'acc_support', name: 'Support Account' });
+  await store.saveAccount({ id: 'acc_sales', name: 'Sales Account' });
+  await store.saveAccount({ id: 'acc_support', name: 'Support Account' });
 
   // Add messages for both
-  store.addMessage({
+  await store.addMessage({
     id: 'msg_1',
     accountId: 'acc_sales',
     remoteJid: '919876543210@s.whatsapp.net',
@@ -79,7 +81,7 @@ test('Store - Multi-account chat filtering and message storage', (t) => {
     timestamp: new Date().toISOString()
   });
 
-  store.addMessage({
+  await store.addMessage({
     id: 'msg_2',
     accountId: 'acc_support',
     remoteJid: '919123456789@s.whatsapp.net',
@@ -91,15 +93,15 @@ test('Store - Multi-account chat filtering and message storage', (t) => {
   });
 
   // Verify all chats
-  const allChats = store.getChats();
+  const allChats = await store.getChats();
   assert.ok(allChats.length >= 2, 'Should have at least 2 chats');
 
   // Verify filtered chats
-  const salesChats = store.getChats('acc_sales');
+  const salesChats = await store.getChats('acc_sales');
   assert.strictEqual(salesChats.every(c => c.accountId === 'acc_sales'), true);
   assert.ok(salesChats.some(c => c.remoteJid === '919876543210@s.whatsapp.net'));
 
-  const supportChats = store.getChats('acc_support');
+  const supportChats = await store.getChats('acc_support');
   assert.strictEqual(supportChats.every(c => c.accountId === 'acc_support'), true);
   assert.ok(supportChats.some(c => c.remoteJid === '919123456789@s.whatsapp.net'));
 });

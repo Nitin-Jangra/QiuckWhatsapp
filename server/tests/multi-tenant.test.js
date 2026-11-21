@@ -10,6 +10,7 @@ process.env.AUTH_REQUIRED = 'true';
 
 const app = require('../src/app');
 const store = require('../src/store');
+test.before(() => app.ready);
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
@@ -106,7 +107,7 @@ test('Multi-Tenant Isolation - Chats, Messages and Sending', async () => {
     const accBId = (await (await post(base, '/api/accounts', { name: 'Customer Line D' }, userBCookie)).json()).data.id;
 
     // Ingest messages into both lines
-    store.addMessage({
+    await store.addMessage({
       id: 'msg_a_1',
       accountId: accAId,
       remoteJid: '919876543210@s.whatsapp.net',
@@ -117,7 +118,7 @@ test('Multi-Tenant Isolation - Chats, Messages and Sending', async () => {
       timestamp: new Date().toISOString()
     });
 
-    store.addMessage({
+    await store.addMessage({
       id: 'msg_b_1',
       accountId: accBId,
       remoteJid: '919123456789@s.whatsapp.net',
@@ -165,7 +166,7 @@ test('Unified Inbox - Pin, Archive, and Filtering', async () => {
     const userCookie = await registerAndLogin(base, 'tenant_inbox', '9870000005');
     const accId = (await (await post(base, '/api/accounts', { name: 'Support Inbox' }, userCookie)).json()).data.id;
 
-    store.addMessage({
+    await store.addMessage({
       id: 'msg_pin_1',
       accountId: accId,
       remoteJid: '919999000001@s.whatsapp.net',
@@ -176,7 +177,7 @@ test('Unified Inbox - Pin, Archive, and Filtering', async () => {
       timestamp: new Date().toISOString()
     });
 
-    store.addMessage({
+    await store.addMessage({
       id: 'msg_arc_1',
       accountId: accId,
       remoteJid: '919999000002@s.whatsapp.net',

@@ -40,6 +40,7 @@ export default {
       const targetUrl = new URL(url.pathname + url.search, backendUrl);
       const newHeaders = new Headers(request.headers);
       newHeaders.set('host', targetUrl.host);
+      newHeaders.set('x-forwarded-host', url.host); // lets the backend's cross-site check recognise the gateway
 
       try {
         const proxyResponse = await fetch(targetUrl.toString(), {

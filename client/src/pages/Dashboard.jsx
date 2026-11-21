@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import AdminPanelModal from '../components/AdminPanelModal';
+import TeamModal from '../components/TeamModal';
 import PrivacyPolicyModal from '../components/PrivacyPolicyModal';
 import TermsConditionsModal from '../components/TermsConditionsModal';
 
@@ -35,7 +36,12 @@ const getStoredApi = () => {
 
 export default function Dashboard({ user, onLogout }) {
   const isAdmin = !user || user?.role === 'admin';
+  // UI hints only; the backend enforces every permission
+  const can = (perm) => !user || user.role === 'admin' || user.isOwner || Boolean(user.permissions?.includes(perm));
   const [showAdminPanel, setShowAdminPanel] = useState(false);
+  const [showTeam, setShowTeam] = useState(false);
+  const [viewers, setViewers] = useState([]);
+  const newKey = () => (window.crypto?.randomUUID ? window.crypto.randomUUID() : `${Date.now()}-${Math.random()}`);
   const [showPrivacy, setShowPrivacy] = useState(false);
   const [showTerms, setShowTerms] = useState(false);
 
@@ -338,6 +344,20 @@ export default function Dashboard({ user, onLogout }) {
     }
   }, [selectedChat]);
 
+  // Announce that this member is handling the open chat (refreshed while it stays open)
+  useEffect(() => {
+    setViewers([]);
+    if (!selectedChat || !user) return;
+    const ping = () => fetch(endpoint('/api/chats/viewing'), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ accountId: selectedChat.accountId, remoteJid: selectedChat.remoteJid })
+    }).then(safeJson).then(j => j.success && setViewers((j.data || []).filter(v => v.id !== user?.id))).catch(() => {});
+    ping();
+    const t = setInterval(ping, 20000);
+    return () => clearInterval(t);
+  }, [selectedChat?.id]);
+
   // 5. Real-time SSE listener
   useEffect(() => {
     const sse = new EventSource(endpoint('/api/events'));
@@ -439,6 +459,17 @@ export default function Dashboard({ user, onLogout }) {
       fetchChats();
     });
 
+    // Other team members currently handling the open conversation
+    sse.addEventListener('viewing', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        const open = selectedChatRef.current;
+        if (open && open.accountId === data.accountId && open.remoteJid === data.remoteJid) {
+          setViewers((data.viewers || []).filter(v => v.id !== user?.id));
+        }
+      } catch (err) {}
+    });
+
     return () => {
       sse.close();
     };
@@ -510,7 +541,8 @@ export default function Dashboard({ user, onLogout }) {
             mediaType,
             mimetype: selectedFile.type,
             fileName: selectedFile.name,
-            caption: replyText.trim()
+            caption: replyText.trim(),
+            clientMessageId: newKey()
           })
         });
 
@@ -530,7 +562,8 @@ export default function Dashboard({ user, onLogout }) {
             accountId: selectedChat.accountId,
             remoteJid: selectedChat.remoteJid,
             to: selectedChat.customerPhone,
-            text: replyText.trim()
+            text: replyText.trim(),
+            clientMessageId: newKey()
           })
         });
 
@@ -611,6 +644,21 @@ export default function Dashboard({ user, onLogout }) {
     }
   };
 
+  const handleToggleSending = async (acc) => {
+    try {
+      const res = await fetch(endpoint(`/api/accounts/${acc.id}/sending`), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paused: !acc.sendingPaused })
+      });
+      const json = await safeJson(res);
+      if (!json.success) alert(json.error || 'Failed to update sending state');
+      fetchAccounts();
+    } catch (err) {
+      alert('Failed to update sending state: ' + err.message);
+    }
+  };
+
   const handleDeleteAccount = async (accId) => {
     if (!confirm('Are you sure you want to permanently delete this account? All session credentials and message history will be removed.')) return;
     try {
@@ -648,7 +696,8 @@ export default function Dashboard({ user, onLogout }) {
         body: JSON.stringify({
           accountId: newChatAccountId,
           to: newChatPhone.trim(),
-          text: newChatText.trim()
+          text: newChatText.trim(),
+          clientMessageId: newKey()
         })
       });
       const json = await safeJson(res);
@@ -767,8 +816,8 @@ export default function Dashboard({ user, onLogout }) {
               <i className={`bi ${soundEnabled ? 'bi-volume-up-fill' : 'bi-volume-mute-fill'}`}></i>
             </button>
 
-            {/* Add Account Button (admins only) */}
-            {isAdmin && <button
+            {/* Add Account Button (owners / members with accounts.manage) */}
+            {can('accounts.manage') && <button
               className="btn btn-sm btn-msquare-primary d-flex align-items-center gap-1 py-1 px-3"
               onClick={() => {
                 setQrModalAccount(null);
@@ -787,6 +836,17 @@ export default function Dashboard({ user, onLogout }) {
               >
                 <i className="bi bi-shield-lock-fill"></i>
                 <span className="d-none d-lg-inline small fw-semibold">Admin Panel</span>
+              </button>
+            )}
+
+            {user && user.role !== 'admin' && (
+              <button
+                className="btn btn-sm btn-outline-secondary d-flex align-items-center gap-1 py-1 px-2"
+                title={can('team.view') ? 'Team Management' : 'My Account'}
+                onClick={() => setShowTeam(true)}
+              >
+                <i className={`bi ${can('team.view') ? 'bi-people-fill' : 'bi-person-circle'}`}></i>
+                <span className="d-none d-lg-inline small fw-semibold">{can('team.view') ? 'Team' : 'My Account'}</span>
               </button>
             )}
 
@@ -1097,6 +1157,12 @@ export default function Dashboard({ user, onLogout }) {
                       <i className="bi bi-whatsapp me-1 text-success"></i>
                       Via {selectedChat.accountName}
                     </span>
+                    {viewers.length > 0 && (
+                      <span className="badge bg-warning-subtle text-warning-emphasis border border-warning-subtle" style={{ fontSize: '0.72rem' }} title="Another team member has this chat open">
+                        <i className="bi bi-eye-fill me-1"></i>
+                        {viewers.map(v => v.name).join(', ')} {viewers.length === 1 ? 'is' : 'are'} also handling this chat
+                      </span>
+                    )}
                   </div>
                 </div>
               </div>
@@ -1256,6 +1322,7 @@ export default function Dashboard({ user, onLogout }) {
                         <div
                           className="wa-time" style={{ opacity: isMe ? 0.9 : 0.6 }}
                         >
+                          {isMe && m.sentBy?.name && <span className="me-1" title="Sent by team member">{m.sentBy.name} ·</span>}
                           <span>{formatClock(m.timestamp)}</span>
                           {isMe && <i className="bi bi-check2-all" title="Sent"></i>}
                         </div>
@@ -1630,6 +1697,13 @@ export default function Dashboard({ user, onLogout }) {
                                     </button>
                                   )}
                                   <button
+                                    className={`btn ${acc.sendingPaused ? 'btn-warning' : 'btn-outline-secondary'}`}
+                                    onClick={() => handleToggleSending(acc)}
+                                    title={acc.sendingPaused ? 'Resume outgoing messages' : 'Pause all outgoing messages on this number'}
+                                  >
+                                    <i className={`bi ${acc.sendingPaused ? 'bi-play-fill' : 'bi-pause-fill'}`}></i>
+                                  </button>
+                                  <button
                                     className="btn btn-outline-danger"
                                     onClick={() => handleDeleteAccount(acc.id)}
                                     title="Unlink & Delete Account"
@@ -1760,6 +1834,7 @@ export default function Dashboard({ user, onLogout }) {
       )}
 
       {showAdminPanel && <AdminPanelModal currentUserId={user?.id} onClose={() => setShowAdminPanel(false)} />}
+      {showTeam && <TeamModal user={user} can={can} accounts={accounts} endpoint={endpoint} onClose={() => setShowTeam(false)} />}
       {showPrivacy && <PrivacyPolicyModal onClose={() => setShowPrivacy(false)} />}
       {showTerms && <TermsConditionsModal onClose={() => setShowTerms(false)} />}
     </div>

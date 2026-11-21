@@ -12,6 +12,7 @@ process.env.AUTH_REQUIRED = 'true';
 const app = require('../src/app');
 const auth = require('../src/auth');
 const db = require('../src/db');
+test.before(() => app.ready);
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
@@ -275,10 +276,10 @@ test('Phase 1 - Admin Panel authorization and stats', async () => {
   await withServer(async (base) => {
     // Seed test admin for this test
     const now = new Date().toISOString();
-    db.prepare(`
-      INSERT OR REPLACE INTO users (id, username, name, full_name, phone_number, phone_verified_at, password_hash, role, status, active, created_at, updated_at)
+    (await db.run(`
+      INSERT INTO users (id, username, name, full_name, phone_number, phone_verified_at, password_hash, role, status, active, created_at, updated_at)
       VALUES (9999, 'admin', 'Super Admin', 'Super Admin', '+919999999999', ?, ?, 'admin', 'active', 1, ?, ?)
-    `).run(now, auth.hashPassword('Admin@WaCRM2026!'), now, now);
+    `, now, auth.hashPassword('Admin@WaCRM2026!'), now, now));
 
     // 1. Login as default SuperAdmin
     const adminLogin = await post(base, '/api/auth/login', { username: 'admin', password: 'Admin@WaCRM2026!' });

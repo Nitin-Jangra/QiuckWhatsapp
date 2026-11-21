@@ -6,15 +6,22 @@ const router = express.Router();
 
 const findByUsername = (u) => auth.getUserByUsername(u);
 const findByPhone = (p) => auth.getUserByPhone(p);
+const maskPhone = (p) => (p ? `${p.slice(0, 3)}******${p.slice(-4)}` : null);
+const loginDone = async (req, res, user) => {
+  (await db.run('UPDATE users SET last_login_at = ? WHERE id = ?', new Date().toISOString(), user.id));
+  await auth.setSessionCookie(req, res, user.id);
+  await auth.audit(req, 'auth.login', { username: user.username }, { userId: user.id, accountId: user.parent_id || user.id });
+  res.json({ success: true, data: { user: await auth.publicUser(await auth.getUserById(user.id)) } });
+};
 
 // Who am I? Tells the UI whether authentication is active and who the logged-in user is
-router.get('/me', (req, res) => {
+router.get('/me', async (req, res) => {
   const authRequired = process.env.AUTH_REQUIRED === 'true';
   res.json({
     success: true,
     data: {
       user: req.user,
-      needsSetup: authRequired && auth.countUsers() === 0,
+      needsSetup: authRequired && await auth.countUsers() === 0,
       authRequired
     }
   });
@@ -23,7 +30,7 @@ router.get('/me', (req, res) => {
 // ---- 1. REGISTRATION ----
 
 // Step 1: Request OTP for mobile number verification
-router.post('/register/send-otp', (req, res) => {
+router.post('/register/send-otp', async (req, res) => {
   try {
     const { phoneNumber, username } = req.body || {};
 
@@ -37,7 +44,7 @@ router.post('/register/send-otp', (req, res) => {
     }
 
     // Check if phone number is already registered
-    const existingPhone = findByPhone(normPhone);
+    const existingPhone = await findByPhone(normPhone);
     if (existingPhone) {
       return res.status(409).json({ success: false, error: 'This phone number is already registered' });
     }
@@ -48,13 +55,13 @@ router.post('/register/send-otp', (req, res) => {
       if (!uCheck.valid) {
         return res.status(400).json({ success: false, error: uCheck.error });
       }
-      const existingUser = findByUsername(username);
+      const existingUser = await findByUsername(username);
       if (existingUser) {
         return res.status(409).json({ success: false, error: 'This username is already taken' });
       }
     }
 
-    const result = auth.sendOtp(normPhone, 'registration');
+    const result = await auth.sendOtp(normPhone, 'registration');
     res.json({
       success: true,
       message: result.message,
@@ -71,9 +78,12 @@ router.post('/register/send-otp', (req, res) => {
 });
 
 // Step 2: Complete registration with verified OTP
-router.post('/register/verify', (req, res) => {
+router.post('/register/verify', async (req, res) => {
   try {
-    const { fullName, username, phoneNumber, otp, password, acceptTerms } = req.body || {};
+    const { fullName, username, phoneNumber, email, otp, password, acceptTerms } = req.body || {};
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email))) {
+      return res.status(400).json({ success: false, error: 'Invalid email address' });
+    }
 
     if (!acceptTerms) {
       return res.status(400).json({ success: false, error: 'You must accept the terms of service and privacy policy' });
@@ -103,42 +113,42 @@ router.post('/register/verify', (req, res) => {
     }
 
     // Check uniqueness
-    if (findByUsername(username)) {
+    if (await findByUsername(username)) {
       return res.status(409).json({ success: false, error: 'That username is already taken' });
     }
-    if (findByPhone(normPhone)) {
+    if (await findByPhone(normPhone)) {
       return res.status(409).json({ success: false, error: 'That phone number is already registered' });
     }
 
     // Verify OTP
-    auth.verifyOtp(normPhone, 'registration', otp);
+    await auth.verifyOtp(normPhone, 'registration', otp);
 
     // Create user
     const now = new Date().toISOString();
-    const info = db.prepare(`
-      INSERT INTO users (username, name, full_name, phone_number, phone_verified_at, password_hash, role, status, active, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, 'user', 'active', 1, ?, ?)
-    `).run(
-      uCheck.username,
+    const userId = await db.insert(`
+      INSERT INTO users (username, name, full_name, email, phone_number, phone_verified_at, password_hash, role, status, active, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 'user', 'active', 1, ?, ?)
+    `, uCheck.username,
       fullName.trim(),
       fullName.trim(),
+      email ? String(email).trim().toLowerCase() : null,
       normPhone,
       now,
       auth.hashPassword(password),
       now,
-      now
-    );
+      now);
 
-    const userId = Number(info.lastInsertRowid);
-    const user = auth.getUserById(userId);
+    const user = await auth.getUserById(userId);
 
+    // The new user owns a fresh, isolated workspace (workspace id = owner user id)
+    await auth.audit(req, 'auth.registered', { username: uCheck.username }, { userId, accountId: userId });
     // Auto-login newly registered user
-    auth.setSessionCookie(req, res, userId);
+    await auth.setSessionCookie(req, res, userId);
 
     res.json({
       success: true,
       message: 'Registration successful',
-      data: { user: auth.publicUser(user) }
+      data: { user: await auth.publicUser(user) }
     });
   } catch (err) {
     res.status(400).json({ success: false, error: err.message });
@@ -147,7 +157,7 @@ router.post('/register/verify', (req, res) => {
 
 // ---- 2. LOGIN ----
 
-router.post('/login', (req, res) => {
+router.post('/login', async (req, res) => {
   const throttle = auth.loginThrottle(req);
   if (throttle.blocked) {
     return res.status(429).json({ success: false, error: 'Too many attempts. Try again in a few minutes.' });
@@ -160,39 +170,37 @@ router.post('/login', (req, res) => {
 
   let user = null;
   if (username) {
-    user = findByUsername(username);
+    user = await findByUsername(username);
   } else if (phoneNumber) {
-    user = findByPhone(phoneNumber);
+    user = await findByPhone(phoneNumber);
   } else {
     return res.status(400).json({ success: false, error: 'Username or phone number is required' });
   }
 
-  if (!user || !user.active || user.status === 'suspended' || !auth.verifyPassword(String(password), user.password_hash)) {
+  if (!user || !auth.verifyPassword(String(password), user.password_hash) || !await auth.isUserUsable(user)) {
     throttle.fail();
+    await auth.audit(req, 'auth.login_failed', { username: String(username || phoneNumber).slice(0, 60) },
+      { userId: user?.id ?? null, accountId: user ? user.parent_id || user.id : null });
     return res.status(401).json({ success: false, error: 'Invalid username/phone number or password' });
   }
 
   throttle.clear();
-  auth.setSessionCookie(req, res, user.id);
-  res.json({ success: true, data: { user: auth.publicUser(user) } });
+  await loginDone(req, res, user);
 });
 
 // Login via OTP: Send OTP
-router.post('/login/send-otp', (req, res) => {
+router.post('/login/send-otp', async (req, res) => {
   try {
     const { phoneNumber } = req.body || {};
     if (!phoneNumber) return res.status(400).json({ success: false, error: 'Phone number is required' });
 
     const normPhone = auth.normalizePhone(phoneNumber);
-    const user = findByPhone(normPhone);
-    if (!user) {
-      return res.status(404).json({ success: false, error: 'No account found with this phone number' });
-    }
-    if (!user.active || user.status === 'suspended') {
-      return res.status(403).json({ success: false, error: 'Account is deactivated or suspended' });
+    const user = await findByPhone(normPhone);
+    if (!user || !await auth.isUserUsable(user)) {
+      return res.json({ success: true, message: 'If this number is registered, a code has been sent', data: { phoneNumber: normPhone } });
     }
 
-    const result = auth.sendOtp(normPhone, 'login');
+    const result = await auth.sendOtp(normPhone, 'login');
     res.json({
       success: true,
       message: result.message,
@@ -209,7 +217,7 @@ router.post('/login/send-otp', (req, res) => {
 });
 
 // Login via OTP: Verify
-router.post('/login/verify-otp', (req, res) => {
+router.post('/login/verify-otp', async (req, res) => {
   try {
     const { phoneNumber, otp } = req.body || {};
     if (!phoneNumber || !otp) {
@@ -217,14 +225,13 @@ router.post('/login/verify-otp', (req, res) => {
     }
 
     const normPhone = auth.normalizePhone(phoneNumber);
-    const user = findByPhone(normPhone);
-    if (!user || !user.active) {
-      return res.status(404).json({ success: false, error: 'Account not found' });
+    const user = await findByPhone(normPhone);
+    if (!user || !await auth.isUserUsable(user)) {
+      return res.status(400).json({ success: false, error: 'Invalid or expired code' });
     }
 
-    auth.verifyOtp(normPhone, 'login', otp);
-    auth.setSessionCookie(req, res, user.id);
-    res.json({ success: true, data: { user: auth.publicUser(user) } });
+    await auth.verifyOtp(normPhone, 'login', otp);
+    await loginDone(req, res, user);
   } catch (err) {
     res.status(400).json({ success: false, error: err.message });
   }
@@ -232,24 +239,24 @@ router.post('/login/verify-otp', (req, res) => {
 
 // ---- 3. FORGOT PASSWORD & RESET ----
 
-router.post('/forgot-password/send-otp', (req, res) => {
+router.post('/forgot-password/send-otp', async (req, res) => {
   try {
     const { identifier } = req.body || {};
     if (!identifier) return res.status(400).json({ success: false, error: 'Username or phone number is required' });
 
-    let user = findByUsername(identifier);
-    if (!user) user = findByPhone(identifier);
+    let user = await findByUsername(identifier);
+    if (!user) user = await findByPhone(identifier);
 
     if (!user || !user.phone_number) {
-      return res.status(404).json({ success: false, error: 'Account not found or no mobile number linked' });
+      return res.json({ success: true, message: 'If this account exists, a reset code has been sent to its mobile number', data: {} });
     }
 
-    const result = auth.sendOtp(user.phone_number, 'reset_password');
+    const result = await auth.sendOtp(user.phone_number, 'reset_password');
     res.json({
       success: true,
-      message: result.message,
+      message: `Reset code sent to ${maskPhone(result.phoneNumber)}`,
       data: {
-        phoneNumber: result.phoneNumber,
+        phoneNumber: maskPhone(result.phoneNumber),
         expiresAt: result.expiresAt,
         ...(result.devOtp ? { devOtp: result.devOtp } : {})
       }
@@ -260,31 +267,31 @@ router.post('/forgot-password/send-otp', (req, res) => {
   }
 });
 
-router.post('/forgot-password/reset', (req, res) => {
+router.post('/forgot-password/reset', async (req, res) => {
   try {
-    const { phoneNumber, otp, newPassword } = req.body || {};
-    if (!phoneNumber || !otp || !newPassword) {
-      return res.status(400).json({ success: false, error: 'Phone number, OTP, and new password are required' });
+    const { phoneNumber, identifier, otp, newPassword } = req.body || {};
+    if ((!phoneNumber && !identifier) || !otp || !newPassword) {
+      return res.status(400).json({ success: false, error: 'Account, OTP, and new password are required' });
     }
 
     const pCheck = auth.validatePassword(newPassword);
     if (!pCheck.valid) return res.status(400).json({ success: false, error: pCheck.error });
 
-    const normPhone = auth.normalizePhone(phoneNumber);
-    const user = findByPhone(normPhone);
-    if (!user) return res.status(404).json({ success: false, error: 'Account not found' });
+    // phoneNumber may be the masked value echoed by the UI, so fall back to the identifier
+    const user = (phoneNumber && !String(phoneNumber).includes('*') && await findByPhone(phoneNumber))
+      || (identifier && (await findByUsername(identifier) || await findByPhone(identifier)));
+    if (!user || !user.phone_number) return res.status(400).json({ success: false, error: 'Invalid or expired code' });
 
-    auth.verifyOtp(normPhone, 'reset_password', otp);
+    await auth.verifyOtp(user.phone_number, 'reset_password', otp);
 
     const now = new Date().toISOString();
-    db.prepare('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?').run(
-      auth.hashPassword(newPassword),
+    (await db.run('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?', auth.hashPassword(newPassword),
       now,
-      user.id
-    );
+      user.id));
 
     // Invalidate existing sessions across all devices
-    auth.revokeAllUserSessions(user.id);
+    await auth.revokeAllUserSessions(user.id);
+    await auth.audit(req, 'auth.password_reset', {}, { userId: user.id, accountId: user.parent_id || user.id });
 
     res.json({ success: true, message: 'Password reset successful. Please sign in with your new password.' });
   } catch (err) {
@@ -294,23 +301,42 @@ router.post('/forgot-password/reset', (req, res) => {
 
 // ---- 4. LOGOUT ----
 
-router.post('/logout', (req, res) => {
-  auth.clearSessionCookie(req, res);
+router.post('/logout', async (req, res) => {
+  if (req.user && typeof req.user.id === 'number') await auth.audit(req, 'auth.logout');
+  await auth.clearSessionCookie(req, res);
   res.json({ success: true, message: 'Signed out successfully' });
 });
 
-router.post('/logout-all', (req, res) => {
+router.post('/logout-all', async (req, res) => {
   if (req.user?.id) {
-    auth.revokeAllUserSessions(req.user.id);
+    await auth.audit(req, 'auth.logout_all');
+    await auth.revokeAllUserSessions(req.user.id);
   }
-  auth.clearSessionCookie(req, res);
+  await auth.clearSessionCookie(req, res);
   res.json({ success: true, message: 'Signed out from all devices' });
+});
+
+// Change own password (requires current password); signs out every other device
+router.post('/change-password', async (req, res) => {
+  if (!req.user || typeof req.user.id !== 'number') return res.status(401).json({ success: false, error: 'Please sign in' });
+  const { currentPassword, newPassword } = req.body || {};
+  const user = await auth.getUserById(req.user.id);
+  if (!auth.verifyPassword(String(currentPassword || ''), user.password_hash)) {
+    return res.status(400).json({ success: false, error: 'Current password is incorrect' });
+  }
+  const pCheck = auth.validatePassword(newPassword);
+  if (!pCheck.valid) return res.status(400).json({ success: false, error: pCheck.error });
+  (await db.run('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?', auth.hashPassword(newPassword), new Date().toISOString(), user.id));
+  await auth.revokeAllUserSessions(user.id);
+  await auth.setSessionCookie(req, res, user.id);
+  await auth.audit(req, 'auth.password_changed');
+  res.json({ success: true, message: 'Password changed. Other devices have been signed out.' });
 });
 
 // ---- 5. LEGACY FIRST-RUN SETUP (Backward compatibility) ----
 
-router.post('/setup', (req, res) => {
-  if (auth.countUsers() > 0) return res.status(403).json({ success: false, error: 'Setup already completed' });
+router.post('/setup', async (req, res) => {
+  if (await auth.countUsers() > 0) return res.status(403).json({ success: false, error: 'Setup already completed' });
   const { username, name, password, setupKey } = req.body || {};
   if (process.env.SETUP_KEY && setupKey !== process.env.SETUP_KEY) {
     return res.status(403).json({ success: false, error: 'Invalid setup key' });
@@ -318,11 +344,10 @@ router.post('/setup', (req, res) => {
   if (!username?.trim() || !password || password.length < 8) {
     return res.status(400).json({ success: false, error: 'Username and a password of at least 8 characters are required' });
   }
-  const info = db
-    .prepare('INSERT INTO users (username, name, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)')
-    .run(username.trim(), (name || username).trim(), auth.hashPassword(password), 'admin', new Date().toISOString());
-  auth.setSessionCookie(req, res, Number(info.lastInsertRowid));
-  res.json({ success: true, data: { user: auth.publicUser(auth.getUserById(Number(info.lastInsertRowid))) } });
+  const id = await db.insert('INSERT INTO users (username, name, password_hash, role, created_at) VALUES (?, ?, ?, ?, ?)',
+    username.trim(), (name || username).trim(), auth.hashPassword(password), 'admin', new Date().toISOString());
+  await auth.setSessionCookie(req, res, id);
+  res.json({ success: true, data: { user: await auth.publicUser(await auth.getUserById(id)) } });
 });
 
 module.exports = router;

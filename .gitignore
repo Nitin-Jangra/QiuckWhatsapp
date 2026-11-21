@@ -24,3 +24,4 @@ Thumbs.db
 .gsd/
 temp_*/
 *.zip
+.env.dev-backup
