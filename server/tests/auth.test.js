@@ -321,3 +321,89 @@ test('Phase 1 - Admin Panel authorization and stats', async () => {
     assert.strictEqual(unauthStats.status, 401);
   });
 });
+
+test('Phase 1 - Email OTP registration, login, and forgot-password workflow', async () => {
+  await withServer(async (base) => {
+    // 1. Send OTP for email address
+    const sendRes = await post(base, '/api/auth/register/send-otp', {
+      email: 'testuser@example.com',
+      username: 'emailuser'
+    });
+    assert.strictEqual(sendRes.status, 200);
+    const sendData = await sendRes.json();
+    assert.strictEqual(sendData.success, true);
+    assert.strictEqual(sendData.data.email, 'testuser@example.com');
+    assert.ok(sendData.data.devOtp, 'Should include devOtp');
+    const otp = sendData.data.devOtp;
+
+    // 2. Reject invalid email
+    const invalidEmail = await post(base, '/api/auth/register/send-otp', {
+      email: 'invalid-email',
+      username: 'randomuser'
+    });
+    assert.strictEqual(invalidEmail.status, 400);
+
+    // 3. Complete registration with valid email OTP
+    const regRes = await post(base, '/api/auth/register/verify', {
+      fullName: 'Email User',
+      username: 'emailuser',
+      email: 'testuser@example.com',
+      otp,
+      password: 'StrongPassword123!',
+      acceptTerms: true
+    });
+    assert.strictEqual(regRes.status, 200);
+    const regData = await regRes.json();
+    assert.strictEqual(regData.success, true);
+    assert.strictEqual(regData.data.user.email, 'testuser@example.com');
+    assert.strictEqual(regData.data.user.emailVerified, true);
+
+    // 4. Reject registration with duplicate username
+    const dupRes = await post(base, '/api/auth/register/send-otp', {
+      email: 'other@example.com',
+      username: 'EMAILUSER'
+    });
+    assert.strictEqual(dupRes.status, 409);
+
+    // 5. Duplicate email registration rejection
+    const dupEmailSend = await post(base, '/api/auth/register/send-otp', {
+      email: 'testuser@example.com',
+      username: 'differentuser'
+    });
+    assert.strictEqual(dupEmailSend.status, 409);
+
+    // 6. Login via Email
+    const loginRes = await post(base, '/api/auth/login', {
+      identifier: 'testuser@example.com',
+      password: 'StrongPassword123!'
+    });
+    assert.strictEqual(loginRes.status, 200);
+    const loginData = await loginRes.json();
+    assert.strictEqual(loginData.data.user.username, 'emailuser');
+
+    // 7. Forgot password via Email OTP
+    const forgotRes = await post(base, '/api/auth/forgot-password/send-otp', {
+      identifier: 'testuser@example.com'
+    });
+    assert.strictEqual(forgotRes.status, 200);
+    const forgotData = await forgotRes.json();
+    assert.strictEqual(forgotData.success, true);
+    assert.ok(forgotData.data.devOtp);
+    const resetOtp = forgotData.data.devOtp;
+
+    // Reset password
+    const resetRes = await post(base, '/api/auth/forgot-password/reset', {
+      identifier: 'testuser@example.com',
+      otp: resetOtp,
+      newPassword: 'BrandNewEmailPassword999!'
+    });
+    assert.strictEqual(resetRes.status, 200);
+
+    // Verify login with new password
+    const newLogin = await post(base, '/api/auth/login', {
+      identifier: 'emailuser',
+      password: 'BrandNewEmailPassword999!'
+    });
+    assert.strictEqual(newLogin.status, 200);
+  });
+});

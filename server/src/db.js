@@ -50,7 +50,7 @@ const SQLITE_SCHEMA = `
     PRIMARY KEY (user_id, account_id)
   );
   CREATE TABLE IF NOT EXISTS otp_verifications (
-    id TEXT PRIMARY KEY, phone_number TEXT NOT NULL, otp_hash TEXT NOT NULL, purpose TEXT NOT NULL,
+    id TEXT PRIMARY KEY, phone_number TEXT NOT NULL, email TEXT, otp_hash TEXT NOT NULL, purpose TEXT NOT NULL,
     attempts INTEGER NOT NULL DEFAULT 0, max_attempts INTEGER NOT NULL DEFAULT 3, expires_at TEXT NOT NULL, created_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_otp_phone_purpose ON otp_verifications(phone_number, purpose);
@@ -78,13 +78,16 @@ const SQLITE_COLUMNS = [
   ['contacts', 'user_id', 'INTEGER'],
   // v2: team workspaces
   ['users', 'parent_id', 'INTEGER REFERENCES users(id) ON DELETE CASCADE'],
-  ['users', 'email', 'TEXT'], ['users', 'permissions', 'TEXT'], ['users', 'last_login_at', 'TEXT'], ['users', 'last_active_at', 'TEXT'],
+  ['users', 'email', 'TEXT'], ['users', 'email_verified_at', 'TEXT'], ['users', 'permissions', 'TEXT'], ['users', 'last_login_at', 'TEXT'], ['users', 'last_active_at', 'TEXT'],
+  ['otp_verifications', 'email', 'TEXT'],
   ['audit_logs', 'account_id', 'INTEGER']
 ];
 
 // Shared by both engines (runs after the base schema)
 const COMMON_SCHEMA = `
   CREATE UNIQUE INDEX IF NOT EXISTS idx_users_phone ON users(phone_number) WHERE phone_number IS NOT NULL;
+  CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+  CREATE INDEX IF NOT EXISTS idx_otp_email ON otp_verifications(email, purpose);
   CREATE INDEX IF NOT EXISTS idx_accounts_user ON accounts(user_id);
   CREATE INDEX IF NOT EXISTS idx_chats_user ON chats(user_id, last_ts);
   CREATE INDEX IF NOT EXISTS idx_messages_user ON messages(user_id, ts);
@@ -117,6 +120,7 @@ const PG_SCHEMA = `
     name TEXT NOT NULL,
     full_name TEXT,
     email TEXT,
+    email_verified_at TEXT,
     phone_number TEXT,
     phone_verified_at TEXT,
     password_hash TEXT NOT NULL,
@@ -150,7 +154,7 @@ const PG_SCHEMA = `
     PRIMARY KEY (user_id, account_id)
   );
   CREATE TABLE IF NOT EXISTS otp_verifications (
-    id TEXT PRIMARY KEY, phone_number TEXT NOT NULL, otp_hash TEXT NOT NULL, purpose TEXT NOT NULL,
+    id TEXT PRIMARY KEY, phone_number TEXT NOT NULL, email TEXT, otp_hash TEXT NOT NULL, purpose TEXT NOT NULL,
     attempts INTEGER NOT NULL DEFAULT 0, max_attempts INTEGER NOT NULL DEFAULT 3, expires_at TEXT NOT NULL, created_at TEXT NOT NULL
   );
   CREATE INDEX IF NOT EXISTS idx_otp_phone_purpose ON otp_verifications(phone_number, purpose);

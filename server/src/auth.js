@@ -27,6 +27,33 @@ async function loadSecret() {
 }
 
 // ---- Normalization & Validation ----
+function normalizeEmail(email) {
+  if (!email || typeof email !== 'string') return '';
+  return email.trim().toLowerCase();
+}
+
+function validateEmail(email) {
+  const norm = normalizeEmail(email);
+  if (!norm) return { valid: false, error: 'Email address is required' };
+  if (norm.length > 254) return { valid: false, error: 'Email address is too long' };
+  if (!/^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/.test(norm)) {
+    return { valid: false, error: 'Please enter a valid email address' };
+  }
+  return { valid: true, email: norm };
+}
+
+function maskEmail(email) {
+  if (!email || typeof email !== 'string') return '';
+  const norm = normalizeEmail(email);
+  const parts = norm.split('@');
+  if (parts.length !== 2) return norm;
+  const [user, domain] = parts;
+  const maskedUser = user.length <= 2
+    ? `${user[0]}*`
+    : `${user.slice(0, 2)}***${user.slice(-1)}`;
+  return `${maskedUser}@${domain}`;
+}
+
 function normalizePhone(phone) {
   if (!phone) return '';
   const digits = String(phone).replace(/[^0-9]/g, '');
@@ -160,15 +187,31 @@ function hashOtp(otp) {
   return crypto.createHmac('sha256', SECRET).update(String(otp)).digest('hex');
 }
 
-async function sendOtp(phoneNumber, purpose) {
-  const phone = normalizePhone(phoneNumber);
-  if (!phone || phone.length < 10) throw new Error('A valid mobile phone number is required');
+async function sendOtp(target, purpose) {
+  if (!target) throw new Error('Recipient email or phone number is required');
+  const isEmail = typeof target === 'string' && target.includes('@');
+  let email = null;
+  let phone = null;
+
+  if (isEmail) {
+    const eCheck = validateEmail(target);
+    if (!eCheck.valid) throw new Error(eCheck.error);
+    email = eCheck.email;
+  } else {
+    phone = normalizePhone(target);
+    if (!phone || phone.length < 10) throw new Error('A valid mobile phone number is required');
+  }
 
   // Cooldown check: Has an active OTP been issued in the last 60 seconds?
-  const recent = await db.get(
-    'SELECT created_at FROM otp_verifications WHERE phone_number = ? AND purpose = ? ORDER BY created_at DESC LIMIT 1',
-    phone, purpose
-  );
+  const recent = isEmail
+    ? await db.get(
+        'SELECT created_at FROM otp_verifications WHERE (email = ? OR phone_number = ?) AND purpose = ? ORDER BY created_at DESC LIMIT 1',
+        email, email, purpose
+      )
+    : await db.get(
+        'SELECT created_at FROM otp_verifications WHERE phone_number = ? AND purpose = ? ORDER BY created_at DESC LIMIT 1',
+        phone, purpose
+      );
   if (recent) {
     const elapsed = Date.now() - new Date(recent.created_at).getTime();
     if (elapsed < OTP_COOLDOWN_MS) {
@@ -186,37 +229,52 @@ async function sendOtp(phoneNumber, purpose) {
   const expiresAt = new Date(now.getTime() + OTP_EXPIRY_MS).toISOString();
 
   await db.tx(async () => {
-    // Invalidate any existing unused OTPs for this phone/purpose
-    await db.run('DELETE FROM otp_verifications WHERE phone_number = ? AND purpose = ?', phone, purpose);
-    await db.run(
-      `INSERT INTO otp_verifications (id, phone_number, otp_hash, purpose, attempts, max_attempts, expires_at, created_at)
-       VALUES (?, ?, ?, ?, 0, ?, ?, ?)`,
-      crypto.randomUUID(), phone, hashOtp(otp), purpose, OTP_MAX_ATTEMPTS, expiresAt, now.toISOString()
-    );
+    if (isEmail) {
+      await db.run('DELETE FROM otp_verifications WHERE (email = ? OR phone_number = ?) AND purpose = ?', email, email, purpose);
+      await db.run(
+        `INSERT INTO otp_verifications (id, phone_number, email, otp_hash, purpose, attempts, max_attempts, expires_at, created_at)
+         VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+        crypto.randomUUID(), email, email, hashOtp(otp), purpose, OTP_MAX_ATTEMPTS, expiresAt, now.toISOString()
+      );
+    } else {
+      // Invalidate any existing unused OTPs for this phone/purpose
+      await db.run('DELETE FROM otp_verifications WHERE phone_number = ? AND purpose = ?', phone, purpose);
+      await db.run(
+        `INSERT INTO otp_verifications (id, phone_number, otp_hash, purpose, attempts, max_attempts, expires_at, created_at)
+         VALUES (?, ?, ?, ?, 0, ?, ?, ?)`,
+        crypto.randomUUID(), phone, hashOtp(otp), purpose, OTP_MAX_ATTEMPTS, expiresAt, now.toISOString()
+      );
+    }
   });
 
-  // Log SMS delivery in dev/production
+  // Log delivery in dev/production
   if (process.env.NODE_ENV !== 'production' || process.env.DEBUG_OTP === 'true') {
-    console.log(`[SMS Gateway Mock] Sent OTP ${otp} to ${phone} for ${purpose}`);
+    if (isEmail) {
+      console.log(`[Email Service Mock] Sent OTP ${otp} to ${email} for ${purpose}`);
+    } else {
+      console.log(`[SMS Gateway Mock] Sent OTP ${otp} to ${phone} for ${purpose}`);
+    }
   }
 
   return {
     success: true,
-    message: `OTP sent to ${phone}`,
-    phoneNumber: phone,
+    message: isEmail ? `OTP sent to ${maskEmail(email)}` : `OTP sent to ${phone}`,
+    email: email || undefined,
+    phoneNumber: phone || undefined,
     expiresAt,
     // devOtp is populated outside production for automated validation
     ...(process.env.NODE_ENV !== 'production' ? { devOtp: otp } : {})
   };
 }
 
-async function verifyOtp(phoneNumber, purpose, candidateOtp) {
-  const phone = normalizePhone(phoneNumber);
-  if (!phone || !candidateOtp) throw new Error('Phone number and OTP code are required');
+async function verifyOtp(target, purpose, candidateOtp) {
+  if (!target || !candidateOtp) throw new Error('Recipient and OTP code are required');
+  const isEmail = typeof target === 'string' && target.includes('@');
+  const normTarget = isEmail ? normalizeEmail(target) : normalizePhone(target);
 
   const record = await db.get(
-    'SELECT * FROM otp_verifications WHERE phone_number = ? AND purpose = ? ORDER BY created_at DESC LIMIT 1',
-    phone, purpose
+    'SELECT * FROM otp_verifications WHERE (email = ? OR phone_number = ?) AND purpose = ? ORDER BY created_at DESC LIMIT 1',
+    normTarget, normTarget, purpose
   );
   if (!record) throw new Error('No active OTP found. Please request a new code.');
 
@@ -293,6 +351,7 @@ async function publicUser(u) {
     lastActiveAt: u.last_active_at || null,
     name: u.name || u.full_name,
     fullName: u.full_name || u.name,
+    emailVerified: Boolean(u.email_verified_at),
     phoneNumber: u.phone_number || null,
     phoneVerified: Boolean(u.phone_verified_at),
     role: u.role,
@@ -306,6 +365,8 @@ async function publicUser(u) {
 const getUserById = async (id) => (await db.get('SELECT * FROM users WHERE id = ?', id)) || null;
 const getUserByUsername = async (username) =>
   (await db.get('SELECT * FROM users WHERE LOWER(username) = LOWER(?)', String(username || '').trim())) || null;
+const getUserByEmail = async (email) =>
+  (await db.get('SELECT * FROM users WHERE LOWER(email) = LOWER(?)', normalizeEmail(email))) || null;
 const getUserByPhone = async (phone) => (await db.get('SELECT * FROM users WHERE phone_number = ?', normalizePhone(phone))) || null;
 const countUsers = async () => (await db.get('SELECT COUNT(*) AS n FROM users')).n;
 
@@ -472,10 +533,10 @@ module.exports = {
   init,
   secret: () => SECRET,
   hashPassword, verifyPassword, setSessionCookie, clearSessionCookie, revokeAllUserSessions,
-  publicUser, getUserById, getUserByUsername, getUserByPhone, countUsers,
+  publicUser, getUserById, getUserByUsername, getUserByEmail, getUserByPhone, countUsers,
   setUserAccounts, attachUser, requireAuth, requireAdmin, canAccess, canAccessOwned, allowedAccountIds,
   loginThrottle, readToken, readSession, userFromToken, isUserUsable, parseCookies, COOKIE,
   can, requirePerm, audit, events, PERMISSIONS, ROLE_DEFAULTS, sanitizePermissions, effectivePermissions, isAuthRequired,
-  normalizePhone, validateUsername, validatePassword,
+  normalizeEmail, validateEmail, maskEmail, normalizePhone, validateUsername, validatePassword,
   sendOtp, verifyOtp, hashOtp
 };

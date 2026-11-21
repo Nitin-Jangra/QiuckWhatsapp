@@ -6,6 +6,7 @@ const router = express.Router();
 
 const findByUsername = (u) => auth.getUserByUsername(u);
 const findByPhone = (p) => auth.getUserByPhone(p);
+const findByEmail = (e) => auth.getUserByEmail(e);
 const maskPhone = (p) => (p ? `${p.slice(0, 3)}******${p.slice(-4)}` : null);
 const loginDone = async (req, res, user) => {
   (await db.run('UPDATE users SET last_login_at = ? WHERE id = ?', new Date().toISOString(), user.id));
@@ -29,24 +30,39 @@ router.get('/me', async (req, res) => {
 
 // ---- 1. REGISTRATION ----
 
-// Step 1: Request OTP for mobile number verification
+// Step 1: Request OTP for email verification (or mobile fallback)
 router.post('/register/send-otp', async (req, res) => {
   try {
-    const { phoneNumber, username } = req.body || {};
+    const { email, phoneNumber, username } = req.body || {};
 
-    if (!phoneNumber) {
-      return res.status(400).json({ success: false, error: 'Mobile phone number is required' });
+    if (!email && !phoneNumber) {
+      return res.status(400).json({ success: false, error: 'Email address is required' });
     }
 
-    const normPhone = auth.normalizePhone(phoneNumber);
-    if (!normPhone || normPhone.length < 10) {
-      return res.status(400).json({ success: false, error: 'Invalid phone number. Include country code (e.g. +91 9876543210)' });
-    }
+    let target = '';
+    if (email) {
+      const eCheck = auth.validateEmail(email);
+      if (!eCheck.valid) {
+        return res.status(400).json({ success: false, error: eCheck.error });
+      }
+      target = eCheck.email;
 
-    // Check if phone number is already registered
-    const existingPhone = await findByPhone(normPhone);
-    if (existingPhone) {
-      return res.status(409).json({ success: false, error: 'This phone number is already registered' });
+      // Check if email is already registered
+      const existingEmail = await findByEmail(target);
+      if (existingEmail) {
+        return res.status(409).json({ success: false, error: 'This email is already registered' });
+      }
+    } else {
+      // Fallback for mobile phone if email is not provided
+      const normPhone = auth.normalizePhone(phoneNumber);
+      if (!normPhone || normPhone.length < 10) {
+        return res.status(400).json({ success: false, error: 'Invalid phone number. Include country code (e.g. +91 9876543210)' });
+      }
+      target = normPhone;
+      const existingPhone = await findByPhone(normPhone);
+      if (existingPhone) {
+        return res.status(409).json({ success: false, error: 'This phone number is already registered' });
+      }
     }
 
     // Check username availability if provided
@@ -61,12 +77,13 @@ router.post('/register/send-otp', async (req, res) => {
       }
     }
 
-    const result = await auth.sendOtp(normPhone, 'registration');
+    const result = await auth.sendOtp(target, 'registration');
     res.json({
       success: true,
       message: result.message,
       data: {
-        phoneNumber: result.phoneNumber,
+        ...(result.email ? { email: result.email } : {}),
+        ...(result.phoneNumber ? { phoneNumber: result.phoneNumber } : {}),
         expiresAt: result.expiresAt,
         ...(result.devOtp ? { devOtp: result.devOtp } : {})
       }
@@ -80,10 +97,7 @@ router.post('/register/send-otp', async (req, res) => {
 // Step 2: Complete registration with verified OTP
 router.post('/register/verify', async (req, res) => {
   try {
-    const { fullName, username, phoneNumber, email, otp, password, acceptTerms } = req.body || {};
-    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(email))) {
-      return res.status(400).json({ success: false, error: 'Invalid email address' });
-    }
+    const { fullName, username, email, phoneNumber, otp, password, acceptTerms } = req.body || {};
 
     if (!acceptTerms) {
       return res.status(400).json({ success: false, error: 'You must accept the terms of service and privacy policy' });
@@ -103,37 +117,70 @@ router.post('/register/verify', async (req, res) => {
       return res.status(400).json({ success: false, error: pCheck.error });
     }
 
-    const normPhone = auth.normalizePhone(phoneNumber);
-    if (!normPhone || normPhone.length < 10) {
-      return res.status(400).json({ success: false, error: 'Invalid phone number' });
-    }
-
     if (!otp) {
       return res.status(400).json({ success: false, error: 'Verification OTP is required' });
+    }
+
+    if (!email && !phoneNumber) {
+      return res.status(400).json({ success: false, error: 'Email address is required' });
+    }
+
+    let normEmail = null;
+    let normPhone = null;
+
+    if (email) {
+      const eCheck = auth.validateEmail(email);
+      if (!eCheck.valid) {
+        return res.status(400).json({ success: false, error: eCheck.error });
+      }
+      normEmail = eCheck.email;
+    }
+
+    if (phoneNumber) {
+      normPhone = auth.normalizePhone(phoneNumber);
+      if (normPhone && normPhone.length < 10 && !normEmail) {
+        return res.status(400).json({ success: false, error: 'Invalid phone number' });
+      }
+    }
+
+    // Determine which identifier holds the pending registration OTP
+    let targetForOtp = null;
+    if (normEmail && await db.get('SELECT id FROM otp_verifications WHERE (email = ? OR phone_number = ?) AND purpose = ?', normEmail, normEmail, 'registration')) {
+      targetForOtp = normEmail;
+    } else if (normPhone && await db.get('SELECT id FROM otp_verifications WHERE phone_number = ? AND purpose = ?', normPhone, 'registration')) {
+      targetForOtp = normPhone;
+    } else {
+      targetForOtp = normEmail || normPhone;
     }
 
     // Check uniqueness
     if (await findByUsername(username)) {
       return res.status(409).json({ success: false, error: 'That username is already taken' });
     }
-    if (await findByPhone(normPhone)) {
+    if (normEmail && await findByEmail(normEmail)) {
+      return res.status(409).json({ success: false, error: 'That email is already registered' });
+    }
+    if (normPhone && await findByPhone(normPhone)) {
       return res.status(409).json({ success: false, error: 'That phone number is already registered' });
     }
 
     // Verify OTP
-    await auth.verifyOtp(normPhone, 'registration', otp);
+    await auth.verifyOtp(targetForOtp, 'registration', otp);
 
     // Create user
     const now = new Date().toISOString();
+    const isEmailVerified = targetForOtp === normEmail || Boolean(normEmail && !normPhone);
+    const isPhoneVerified = targetForOtp === normPhone;
     const userId = await db.insert(`
-      INSERT INTO users (username, name, full_name, email, phone_number, phone_verified_at, password_hash, role, status, active, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, 'user', 'active', 1, ?, ?)
+      INSERT INTO users (username, name, full_name, email, email_verified_at, phone_number, phone_verified_at, password_hash, role, status, active, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'user', 'active', 1, ?, ?)
     `, uCheck.username,
       fullName.trim(),
       fullName.trim(),
-      email ? String(email).trim().toLowerCase() : null,
+      normEmail,
+      isEmailVerified ? now : null,
       normPhone,
-      now,
+      isPhoneVerified ? now : null,
       auth.hashPassword(password),
       now,
       now);
@@ -141,7 +188,7 @@ router.post('/register/verify', async (req, res) => {
     const user = await auth.getUserById(userId);
 
     // The new user owns a fresh, isolated workspace (workspace id = owner user id)
-    await auth.audit(req, 'auth.registered', { username: uCheck.username }, { userId, accountId: userId });
+    await auth.audit(req, 'auth.registered', { username: uCheck.username, email: normEmail }, { userId, accountId: userId });
     // Auto-login newly registered user
     await auth.setSessionCookie(req, res, userId);
 
@@ -163,25 +210,30 @@ router.post('/login', async (req, res) => {
     return res.status(429).json({ success: false, error: 'Too many attempts. Try again in a few minutes.' });
   }
 
-  const { username, phoneNumber, password } = req.body || {};
+  const { username, email, phoneNumber, identifier, password } = req.body || {};
   if (!password) {
     return res.status(400).json({ success: false, error: 'Password is required' });
   }
 
+  const lookup = identifier || username || email || phoneNumber;
+  if (!lookup) {
+    return res.status(400).json({ success: false, error: 'Username, email, or phone number is required' });
+  }
+
   let user = null;
-  if (username) {
-    user = await findByUsername(username);
-  } else if (phoneNumber) {
-    user = await findByPhone(phoneNumber);
+  const strLookup = String(lookup).trim();
+  if (strLookup.includes('@')) {
+    user = await findByEmail(strLookup);
   } else {
-    return res.status(400).json({ success: false, error: 'Username or phone number is required' });
+    user = await findByUsername(strLookup);
+    if (!user) user = await findByPhone(strLookup);
   }
 
   if (!user || !auth.verifyPassword(String(password), user.password_hash) || !await auth.isUserUsable(user)) {
     throttle.fail();
-    await auth.audit(req, 'auth.login_failed', { username: String(username || phoneNumber).slice(0, 60) },
+    await auth.audit(req, 'auth.login_failed', { identifier: strLookup.slice(0, 60) },
       { userId: user?.id ?? null, accountId: user ? user.parent_id || user.id : null });
-    return res.status(401).json({ success: false, error: 'Invalid username/phone number or password' });
+    return res.status(401).json({ success: false, error: 'Invalid credentials or password' });
   }
 
   throttle.clear();
@@ -191,21 +243,31 @@ router.post('/login', async (req, res) => {
 // Login via OTP: Send OTP
 router.post('/login/send-otp', async (req, res) => {
   try {
-    const { phoneNumber } = req.body || {};
-    if (!phoneNumber) return res.status(400).json({ success: false, error: 'Phone number is required' });
+    const { email, phoneNumber, identifier } = req.body || {};
+    const lookup = identifier || email || phoneNumber;
+    if (!lookup) return res.status(400).json({ success: false, error: 'Email or phone number is required' });
 
-    const normPhone = auth.normalizePhone(phoneNumber);
-    const user = await findByPhone(normPhone);
-    if (!user || !await auth.isUserUsable(user)) {
-      return res.json({ success: true, message: 'If this number is registered, a code has been sent', data: { phoneNumber: normPhone } });
+    const strLookup = String(lookup).trim();
+    let user = null;
+    if (strLookup.includes('@')) {
+      user = await findByEmail(strLookup);
+    } else {
+      user = await findByUsername(strLookup) || await findByPhone(strLookup);
     }
 
-    const result = await auth.sendOtp(normPhone, 'login');
+    if (!user || !await auth.isUserUsable(user)) {
+      return res.json({ success: true, message: 'If this account is registered, a code has been sent', data: {} });
+    }
+
+    const target = user.email || user.phone_number;
+    const isEmail = Boolean(user.email);
+    const result = await auth.sendOtp(target, 'login');
     res.json({
       success: true,
       message: result.message,
       data: {
-        phoneNumber: result.phoneNumber,
+        ...(isEmail ? { email: auth.maskEmail(user.email) } : {}),
+        ...(user.phone_number ? { phoneNumber: maskPhone(user.phone_number) } : {}),
         expiresAt: result.expiresAt,
         ...(result.devOtp ? { devOtp: result.devOtp } : {})
       }
@@ -219,18 +281,26 @@ router.post('/login/send-otp', async (req, res) => {
 // Login via OTP: Verify
 router.post('/login/verify-otp', async (req, res) => {
   try {
-    const { phoneNumber, otp } = req.body || {};
-    if (!phoneNumber || !otp) {
-      return res.status(400).json({ success: false, error: 'Phone number and OTP are required' });
+    const { email, phoneNumber, identifier, otp } = req.body || {};
+    const lookup = identifier || email || phoneNumber;
+    if (!lookup || !otp) {
+      return res.status(400).json({ success: false, error: 'Account identifier and OTP are required' });
     }
 
-    const normPhone = auth.normalizePhone(phoneNumber);
-    const user = await findByPhone(normPhone);
+    const strLookup = String(lookup).trim();
+    let user = null;
+    if (strLookup.includes('@')) {
+      user = await findByEmail(strLookup);
+    } else {
+      user = await findByUsername(strLookup) || await findByPhone(strLookup);
+    }
+
     if (!user || !await auth.isUserUsable(user)) {
       return res.status(400).json({ success: false, error: 'Invalid or expired code' });
     }
 
-    await auth.verifyOtp(normPhone, 'login', otp);
+    const target = user.email || user.phone_number;
+    await auth.verifyOtp(target, 'login', otp);
     await loginDone(req, res, user);
   } catch (err) {
     res.status(400).json({ success: false, error: err.message });
@@ -241,22 +311,32 @@ router.post('/login/verify-otp', async (req, res) => {
 
 router.post('/forgot-password/send-otp', async (req, res) => {
   try {
-    const { identifier } = req.body || {};
-    if (!identifier) return res.status(400).json({ success: false, error: 'Username or phone number is required' });
+    const { identifier, email, phoneNumber } = req.body || {};
+    const lookup = identifier || email || phoneNumber;
+    if (!lookup) return res.status(400).json({ success: false, error: 'Username, email, or phone number is required' });
 
-    let user = await findByUsername(identifier);
-    if (!user) user = await findByPhone(identifier);
-
-    if (!user || !user.phone_number) {
-      return res.json({ success: true, message: 'If this account exists, a reset code has been sent to its mobile number', data: {} });
+    let user = null;
+    const strLookup = String(lookup).trim();
+    if (strLookup.includes('@')) {
+      user = await findByEmail(strLookup);
+    } else {
+      user = await findByUsername(strLookup);
+      if (!user) user = await findByPhone(strLookup);
     }
 
-    const result = await auth.sendOtp(user.phone_number, 'reset_password');
+    if (!user || (!user.email && !user.phone_number)) {
+      return res.json({ success: true, message: 'If this account exists, a reset code has been sent', data: {} });
+    }
+
+    const target = user.email || user.phone_number;
+    const isEmail = Boolean(user.email);
+    const result = await auth.sendOtp(target, 'reset_password');
     res.json({
       success: true,
-      message: `Reset code sent to ${maskPhone(result.phoneNumber)}`,
+      message: isEmail ? `Reset code sent to ${auth.maskEmail(user.email)}` : `Reset code sent to ${maskPhone(result.phoneNumber)}`,
       data: {
-        phoneNumber: maskPhone(result.phoneNumber),
+        ...(isEmail ? { email: auth.maskEmail(user.email) } : {}),
+        ...(user.phone_number ? { phoneNumber: maskPhone(user.phone_number) } : {}),
         expiresAt: result.expiresAt,
         ...(result.devOtp ? { devOtp: result.devOtp } : {})
       }
@@ -269,25 +349,36 @@ router.post('/forgot-password/send-otp', async (req, res) => {
 
 router.post('/forgot-password/reset', async (req, res) => {
   try {
-    const { phoneNumber, identifier, otp, newPassword } = req.body || {};
-    if ((!phoneNumber && !identifier) || !otp || !newPassword) {
+    const { phoneNumber, identifier, email, otp, newPassword } = req.body || {};
+    const lookup = identifier || email || phoneNumber;
+    if (!lookup || !otp || !newPassword) {
       return res.status(400).json({ success: false, error: 'Account, OTP, and new password are required' });
     }
 
     const pCheck = auth.validatePassword(newPassword);
     if (!pCheck.valid) return res.status(400).json({ success: false, error: pCheck.error });
 
-    // phoneNumber may be the masked value echoed by the UI, so fall back to the identifier
-    const user = (phoneNumber && !String(phoneNumber).includes('*') && await findByPhone(phoneNumber))
-      || (identifier && (await findByUsername(identifier) || await findByPhone(identifier)));
-    if (!user || !user.phone_number) return res.status(400).json({ success: false, error: 'Invalid or expired code' });
+    let user = null;
+    const strLookup = String(lookup).trim();
+    if (strLookup.includes('@') && !strLookup.includes('*')) {
+      user = await findByEmail(strLookup);
+    }
+    if (!user) user = await findByUsername(strLookup);
+    if (!user && !strLookup.includes('*')) user = await findByPhone(strLookup);
 
-    await auth.verifyOtp(user.phone_number, 'reset_password', otp);
+    // Fallback if lookup was masked
+    if (!user && email && !String(email).includes('*')) user = await findByEmail(email);
+    if (!user && phoneNumber && !String(phoneNumber).includes('*')) user = await findByPhone(phoneNumber);
+
+    if (!user || (!user.email && !user.phone_number)) {
+      return res.status(400).json({ success: false, error: 'Invalid or expired code' });
+    }
+
+    const target = user.email || user.phone_number;
+    await auth.verifyOtp(target, 'reset_password', otp);
 
     const now = new Date().toISOString();
-    (await db.run('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?', auth.hashPassword(newPassword),
-      now,
-      user.id));
+    await db.run('UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?', auth.hashPassword(newPassword), now, user.id);
 
     // Invalidate existing sessions across all devices
     await auth.revokeAllUserSessions(user.id);
