@@ -67,9 +67,9 @@ app.use(async (req, res, next) => {
     if (req.path.startsWith('/api')) return res.status(503).json({ success: false, error: hint });
     return res.status(200).type('html').send(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>QuickWhatsApp Setup</title></head>
 <body style="font-family:system-ui,sans-serif;max-width:640px;margin:60px auto;padding:0 20px;line-height:1.5">
-<h2>QuickWhatsApp: Node.js 22 Required</h2>
+<h2>QuickWhatsApp Startup Notice</h2>
 <p style="font-size:16px;color:#d9534f"><strong>${hint.replace(/[<>&]/g, '')}</strong></p>
-<p>In your Hostinger hPanel dashboard, change the <strong>Node.js version</strong> setting from <strong>20</strong> to <strong>22</strong>, then click Save and Restart.</p>
+<p style="color:#666">Check your Hostinger hPanel Node.js settings and logs.</p>
 </body></html>`);
   }
 });

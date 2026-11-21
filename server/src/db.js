@@ -312,7 +312,32 @@ function pgEngine() {
   };
 }
 
-const db = TYPE === 'postgresql' ? pgEngine() : sqliteEngine();
+let active = TYPE === 'postgresql' ? pgEngine() : sqliteEngine();
+
+const db = {
+  get type() { return active.type; },
+  get raw() { return active.raw; },
+  async init() {
+    try {
+      await active.init();
+    } catch (err) {
+      if (active.type === 'postgresql') {
+        console.warn(`[WaCRM] PostgreSQL connection failed (${err.message}). Falling back to built-in SQLite...`);
+        active = sqliteEngine();
+        await active.init();
+      } else {
+        throw err;
+      }
+    }
+  },
+  async get(sql, ...p) { return active.get(sql, ...p); },
+  async all(sql, ...p) { return active.all(sql, ...p); },
+  async run(sql, ...p) { return active.run(sql, ...p); },
+  async insert(sql, ...p) { return active.insert(sql, ...p); },
+  async exec(sql) { return active.exec(sql); },
+  async tx(fn) { return active.tx(fn); },
+  async close() { return active.close(); }
+};
 
 // Unique-constraint violation on either engine (SQLite message / PostgreSQL code 23505)
 db.isUniqueViolation = (err) => err?.code === '23505' || /UNIQUE constraint/i.test(err?.message || '');
