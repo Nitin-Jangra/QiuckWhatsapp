@@ -45,33 +45,12 @@ export default function Dashboard({ user, onLogout }) {
   const [showPrivacy, setShowPrivacy] = useState(false);
   const [showTerms, setShowTerms] = useState(false);
 
-  // Theme & User Experience preferences
-  const [theme, setTheme] = useState(() => localStorage.getItem('wacrm_theme') || 'light');
-  const [inboxTab, setInboxTab] = useState('all'); // 'all', 'unread', 'pinned', 'archived'
-  const [soundEnabled, setSoundEnabled] = useState(true);
+  // Clean unified inbox view tab: 'all', 'unread', 'pinned', 'archived'
+  const [inboxTab, setInboxTab] = useState('all');
 
   useEffect(() => {
-    document.documentElement.setAttribute('data-theme', theme);
-    localStorage.setItem('wacrm_theme', theme);
-  }, [theme]);
-
-  const playChime = () => {
-    if (!soundEnabled) return;
-    try {
-      const ctx = new (window.AudioContext || window.webkitAudioContext)();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.type = 'sine';
-      osc.frequency.setValueAtTime(800, ctx.currentTime);
-      osc.frequency.exponentialRampToValueAtTime(1200, ctx.currentTime + 0.15);
-      gain.gain.setValueAtTime(0.08, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.2);
-      osc.start();
-      osc.stop(ctx.currentTime + 0.2);
-    } catch (e) {}
-  };
+    document.documentElement.setAttribute('data-theme', 'light');
+  }, []);
   // Backend API URL (can be customized via VITE_API_URL or environment)
   const [apiUrl, setApiUrl] = useState(getStoredApi());
   const [apiErrorNotice, setApiErrorNotice] = useState('');
@@ -281,6 +260,50 @@ export default function Dashboard({ user, onLogout }) {
     } catch (e) {}
   };
 
+  const handleDeleteChat = async (chat) => {
+    if (!chat) return;
+    const name = chat.customerName || chat.customerPhone || 'this conversation';
+    if (!confirm(`Are you sure you want to delete the conversation with ${name}? All local message history for this chat will be removed.`)) return;
+    try {
+      const res = await fetch(endpoint(`/api/chats/${encodeURIComponent(chat.accountId)}/${encodeURIComponent(chat.remoteJid)}`), {
+        method: 'DELETE'
+      });
+      const json = await safeJson(res);
+      if (json.success) {
+        setSelectedChat(null);
+        fetchChats();
+      } else {
+        alert(json.error || 'Failed to delete chat');
+      }
+    } catch (err) {
+      alert('Failed to delete chat: ' + err.message);
+    }
+  };
+
+  const handleClearEmptySyncedChats = async () => {
+    const accLabel = selectedAccountId !== 'all' ? 'the selected account' : 'all accounts';
+    if (!confirm(`Are you sure you want to remove all empty chats that were synchronized from ${accLabel}? Conversations with actual messages will NOT be deleted.`)) return;
+    try {
+      const res = await fetch(endpoint('/api/chats/clear-empty'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountId: selectedAccountId !== 'all' ? selectedAccountId : undefined })
+      });
+      const json = await safeJson(res);
+      if (json.success) {
+        alert(`Successfully removed ${json.clearedCount || 0} empty phone-synced chat(s).`);
+        if (selectedChat && selectedChat.lastMessage === 'Chat synchronized from phone') {
+          setSelectedChat(null);
+        }
+        fetchChats();
+      } else {
+        alert(json.error || 'Failed to clear empty chats');
+      }
+    } catch (err) {
+      alert('Failed to clear empty chats: ' + err.message);
+    }
+  };
+
   // Auto-scroll messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -416,9 +439,6 @@ export default function Dashboard({ user, onLogout }) {
     sse.addEventListener('message', (e) => {
       try {
         const msg = JSON.parse(e.data);
-        if (!msg.fromMe) {
-          playChime();
-        }
         const open = selectedChatRef.current;
         if (open && !msg.fromMe && open.accountId === msg.accountId && open.remoteJid === msg.remoteJid) {
           markReadRef.current?.(open);
@@ -798,23 +818,6 @@ export default function Dashboard({ user, onLogout }) {
               <span className="badge bg-secondary rounded-pill">{accounts.length}</span>
             </button>
 
-            {/* Theme Toggle Button */}
-            <button
-              className="btn btn-sm btn-outline-secondary d-flex align-items-center gap-1 py-1 px-2"
-              onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')}
-              title={theme === 'dark' ? 'Switch to Light Mode' : 'Switch to Dark Mode'}
-            >
-              <i className={`bi ${theme === 'dark' ? 'bi-sun-fill text-warning' : 'bi-moon-stars-fill'}`}></i>
-            </button>
-
-            {/* Sound Toggle Button */}
-            <button
-              className={`btn btn-sm ${soundEnabled ? 'btn-outline-secondary' : 'btn-outline-danger'} d-flex align-items-center gap-1 py-1 px-2`}
-              onClick={() => setSoundEnabled(s => !s)}
-              title={soundEnabled ? 'Mute incoming audio notifications' : 'Enable incoming audio notifications'}
-            >
-              <i className={`bi ${soundEnabled ? 'bi-volume-up-fill' : 'bi-volume-mute-fill'}`}></i>
-            </button>
 
             {/* Add Account Button (owners / members with accounts.manage) */}
             {can('accounts.manage') && <button
@@ -909,6 +912,13 @@ export default function Dashboard({ user, onLogout }) {
                 Filter By Account
               </span>
               <div className="d-flex align-items-center gap-2">
+                <button
+                  className="btn btn-link btn-sm text-decoration-none p-0 small text-danger"
+                  onClick={handleClearEmptySyncedChats}
+                  title="Remove empty chats synchronized from phone"
+                >
+                  <i className="bi bi-trash3 me-1"></i>Clear Synced
+                </button>
                 <button
                   className="btn btn-link btn-sm text-decoration-none p-0 small text-secondary"
                   onClick={() => setShowAccountsModal(true)}
@@ -1202,6 +1212,15 @@ export default function Dashboard({ user, onLogout }) {
                   title="Refresh chat messages"
                 >
                   <i className="bi bi-arrow-clockwise"></i>
+                </button>
+
+                {/* Delete Conversation Button */}
+                <button
+                  className="btn btn-sm btn-outline-danger"
+                  onClick={() => handleDeleteChat(selectedChat)}
+                  title="Delete Conversation"
+                >
+                  <i className="bi bi-trash3"></i>
                 </button>
               </div>
             </div>

@@ -138,6 +138,16 @@ test('Staff only see and use accounts assigned to them', async () => {
       const after = (await (await get('/api/chats')).json()).data.find(c => c.remoteJid === '911@s.whatsapp.net');
       assert.strictEqual(after.unreadCount, 0);
 
+      // Delete conversation
+      const del = await fetch(`${base}/api/chats/acc_a/911@s.whatsapp.net`, { method: 'DELETE', headers: { cookie: agent } });
+      assert.strictEqual(del.status, 200);
+      const afterDel = (await (await get('/api/chats')).json()).data.find(c => c.remoteJid === '911@s.whatsapp.net');
+      assert.strictEqual(afterDel, undefined);
+
+      // Clear empty synced chats endpoint
+      const clearRes = await post(base, '/api/chats/clear-empty', { accountId: 'acc_a' }, agent);
+      assert.strictEqual(clearRes.status, 200);
+
       // Admin cannot be locked out
       const me = (await (await fetch(`${base}/api/auth/me`, { headers: { cookie: admin } })).json()).data.user;
       const demote = await fetch(`${base}/api/users/${me.id}`, { method: 'PUT', headers: { ...JSON_HEADERS, cookie: admin }, body: JSON.stringify({ role: 'agent' }) });

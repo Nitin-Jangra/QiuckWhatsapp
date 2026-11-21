@@ -201,6 +201,33 @@ class Store {
     if (chat && chat.unreadCount) await this.updateChat(accountId, remoteJid, { unreadCount: 0 });
   }
 
+  async deleteChat(accountId, remoteJid) {
+    if (!accountId || !remoteJid) return false;
+    const key = `${accountId}:${remoteJid}`;
+    await db.tx(async () => {
+      await db.run('DELETE FROM chats WHERE id = ?', key);
+      await db.run('DELETE FROM messages WHERE account_id = ? AND remote_jid = ?', accountId, remoteJid);
+    });
+    return true;
+  }
+
+  async clearEmptySyncedChats(accountId = null) {
+    const defaultPlaceholder = 'Chat synchronized from phone';
+    const filter = accountId ? [accountId] : null;
+    const allChats = await this.getChats(filter);
+    let clearedCount = 0;
+    for (const chat of allChats) {
+      if (chat.lastMessage === defaultPlaceholder) {
+        const msgs = await this.getMessages(chat.accountId, chat.remoteJid, 1);
+        if (msgs.length === 0) {
+          await this.deleteChat(chat.accountId, chat.remoteJid);
+          clearedCount++;
+        }
+      }
+    }
+    return clearedCount;
+  }
+
   // ---- Messages ----
   async addMessage(msg, options = {}, userId = null) {
     if (!msg || !msg.id || !msg.accountId) return null;

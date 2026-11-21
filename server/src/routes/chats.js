@@ -229,4 +229,33 @@ router.post('/viewing', need('chats.view'), async (req, res) => {
   res.json({ success: true, data: viewers });
 });
 
+// 10. Delete a conversation and its messages
+router.delete('/:accountId/:remoteJid', need('chats.organize'), async (req, res) => {
+  try {
+    const { accountId, remoteJid } = req.params;
+    if (!accountId || !remoteJid) {
+      return res.status(400).json({ success: false, error: 'accountId and remoteJid are required' });
+    }
+    if (!await canAccess(req.user, accountId)) return deny(res);
+    await store.deleteChat(accountId, remoteJid);
+    await audit(req, 'chat.deleted', { accountId, remoteJid });
+    res.json({ success: true, message: 'Chat deleted successfully' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 11. Clear all empty phone-synced conversations (placeholder chats with 0 messages)
+router.post('/clear-empty', need('chats.organize'), async (req, res) => {
+  try {
+    const { accountId } = req.body || {};
+    if (accountId && !await canAccess(req.user, accountId)) return deny(res);
+    const clearedCount = await store.clearEmptySyncedChats(accountId || null);
+    await audit(req, 'chats.cleared_empty', { accountId: accountId || 'all', clearedCount });
+    res.json({ success: true, clearedCount, message: `Cleared ${clearedCount} empty synced chat(s)` });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;

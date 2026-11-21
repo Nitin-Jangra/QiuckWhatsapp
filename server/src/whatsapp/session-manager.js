@@ -514,12 +514,15 @@ class WhatsAppSessionManager extends EventEmitter {
           }
         }
 
-        // Register all chats from phone
+        // Register all chats from phone - cache destination JIDs for routing,
+        // but avoid populating hundreds of empty ghost chats without unread messages or real content
         if (Array.isArray(chats)) {
           for (const c of chats) {
-            await store.saveChat(accountId, c);
             const clean = c.id.split('@')[0].split(':')[0].replace(/[^0-9]/g, '');
             if (clean) this.destinationJidCache.set(accountId + '|' + (clean), c.id);
+            if (c.unreadCount > 0) {
+              await store.saveChat(accountId, c);
+            }
           }
         }
 
