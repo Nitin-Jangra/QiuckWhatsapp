@@ -59,7 +59,7 @@ function copyDir(relPath, excludeNames = ['node_modules', '.git']) {
 }
 
 console.log('[package] Copying root files...');
-['app.js', 'index.js', '.env', '.env.example', '.gitignore', 'package.json', 'package-lock.json', 'worker.js', 'wrangler.jsonc',
+['app.js', 'index.js', 'server.js', '.env', '.env.example', '.gitignore', 'package.json', 'package-lock.json', 'worker.js', 'wrangler.jsonc',
   'DEPLOY_INSTRUCTIONS.md', 'README.md', '.nvmrc'].forEach(copyFile);
 
 console.log('[package] Copying scripts...');
@@ -94,6 +94,8 @@ fs.mkdirSync(path.join(dest, 'server', 'wa_sessions'), { recursive: true });
 // Sanity check critical files in staging folder
 const criticalFiles = [
   path.join(dest, 'app.js'),
+  path.join(dest, 'server.js'),
+  path.join(dest, 'index.js'),
   path.join(dest, 'client', 'src', 'App.jsx'),
   path.join(dest, 'client', 'src', 'pages', 'Dashboard.jsx'),
   path.join(dest, 'client', 'dist', 'index.html'),
